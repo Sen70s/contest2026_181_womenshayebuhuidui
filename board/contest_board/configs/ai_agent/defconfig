@@ -474,14 +474,17 @@ CONFIG_NETUTILS_DHCPC_BOOTP_FLAGS=0x8000
 # TCP downloads rather than an obvious error. 1695 = 1691 + 4 bytes of L2CAP
 # header. Paired with RX_COUNT_EXTRA=2 above so the pool does not balloon.
 CONFIG_BT_BUF_ACL_RX_SIZE=1695
-# Class of Device. The Kconfig symbol is named CONFIG_BLUETOOTH_DEFAULT_COD,
-# so the emitted .config symbol carries the prefix twice - a line written with
-# one prefix is silently discarded (the old 0x00020510 here never took effect;
-# the build used the Kconfig default 0x00280704 instead).
+# Class of Device. The frameworks Kconfig symbol used to be named
+# CONFIG_BLUETOOTH_DEFAULT_COD, which made kconfig emit
+# CONFIG_CONFIG_BLUETOOTH_DEFAULT_COD and left the header-side
+# #ifdef CONFIG_BLUETOOTH_DEFAULT_COD unreachable - the value below had no
+# effect and the build fell back to the Kconfig default 0x00280704.
+# The symbol is renamed to BLUETOOTH_DEFAULT_COD on the #591 branch, so this
+# single-prefix line is what takes effect now.
 # 0x002A0704 = Networking(0x020000) + Audio(0x200000) + Capturing(0x080000)
 # + Wearable/Wristwatch(0x000704). Phones read the Networking bit to decide
 # whether to offer tethering, so PAN needs it set.
-CONFIG_CONFIG_BLUETOOTH_DEFAULT_COD=0x002A0704
+CONFIG_BLUETOOTH_DEFAULT_COD=0x002A0704
 
 # ── On-device language model (velaAI TFLite Micro) ──────────────────────────
 # The local model lives in the team repo at app/ai_agent/ (ai_lm.cxx +
