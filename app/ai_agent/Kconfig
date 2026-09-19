@@ -34,6 +34,36 @@ config EXAMPLES_AI_AGENT_PRIORITY
 	---help---
 		The priority of the AI Agent task.
 
+config AI_AGENT_CARE_IDLE_MIN
+	int "Idle minutes before proactive care"
+	default 5
+	range 1 120
+
+config AI_AGENT_CARE_COOLDOWN_MIN
+	int "Minimum minutes between proactive care messages"
+	default 10
+	range 1 240
+
+config AI_AGENT_CARE_QUIET_START
+	int "Quiet hours start (local hour)"
+	default 22
+	range 0 23
+
+config AI_AGENT_CARE_QUIET_END
+	int "Quiet hours end (local hour)"
+	default 7
+	range 0 23
+
+config AI_AGENT_HR_HIGH
+	int "Simulated heart-rate reminder threshold (bpm)"
+	default 120
+	range 90 180
+
+config AI_AGENT_HR_ALERT_COOLDOWN_S
+	int "Heart-rate alert cooldown (seconds)"
+	default 60
+	range 10 3600
+
 endif # EXAMPLES_AI_AGENT
 
 config EXAMPLES_AUDIO_SETUP

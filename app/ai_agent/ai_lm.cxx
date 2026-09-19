@@ -29,6 +29,9 @@
 #include "ai_lm.h"
 #include "tokenizer.h"
 #include "model/model_data.h"
+#ifdef CONFIG_AI_AGENT_LVGL_UI
+#include "pet_care.h"
+#endif
 
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -38,8 +41,10 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Tensor Arena: 主机侧 RecordingMicroInterpreter 实测 37840 字节,
- * 留足余量取 64KB (静态 BSS; 若 SRAM 紧张可改为 PSRAM malloc) */
+/* Tensor Arena: 主机侧 RecordingMicroInterpreter 实测 37840 字节, 留余量取 64KB。
+ * 放在 SRAM 的静态 BSS 里: 解释器每个 token 都要反复读写这块内存, 放 PSRAM
+ * (QSPI) 实测把推理从 ~9 s 拖到 16~49 s。SRAM 能装下是因为把 g_allsyms 那
+ * 107 KB 从 .data 挪回了 flash (见板级 ld.script)。 */
 #ifndef AI_LM_ARENA_SIZE
 #define AI_LM_ARENA_SIZE (64 * 1024)
 #endif
@@ -63,7 +68,7 @@
 
 /* 模型字节 (RODATA, XIP 直接从 Flash 执行, 16 字节对齐; 定义见 model_data.h) */
 
-/* Tensor Arena (BSS; 若 SRAM 紧张可改为 PSRAM malloc) */
+/* Tensor Arena (SRAM BSS, 见上方说明) */
 static uint8_t s_arena[AI_LM_ARENA_SIZE] __attribute__((aligned(16)));
 
 static tflite::MicroInterpreter *s_interp = NULL;
@@ -792,10 +797,41 @@ static int ag_execute(const char *tool, const ag_args_t *args,
     }
 
   if (strcmp(tool, "set_ac_mode") == 0 || strcmp(tool, "lock_door") == 0 ||
-      strcmp(tool, "unlock_door") == 0 || strcmp(tool, "set_timer") == 0 ||
-      strcmp(tool, "cancel_timer") == 0)
+      strcmp(tool, "unlock_door") == 0)
     {
       snprintf(obs, obs_size, "success");
+      return 0;
+    }
+
+  /* set_timer / cancel_timer: 接真实闹钟状态机（pet_care, 场景①）。
+   * 参数 N 为分钟数（ag_parse_call 已解析），返回值进 observation
+   * 参与第二段生成；闹钟预告/到点/升级由 pet_care 自己渲染。 */
+  if (strcmp(tool, "set_timer") == 0)
+    {
+#ifdef CONFIG_AI_AGENT_LVGL_UI
+      int minutes = atoi(args->n > 0 ? args->a[0] : "0");
+      if (minutes > 0 && pet_care_alarm_set(minutes) == 0)
+        {
+          snprintf(obs, obs_size, "success");
+        }
+      else
+        {
+          snprintf(obs, obs_size, "invalid_minutes");
+        }
+#else
+      snprintf(obs, obs_size, "unsupported");
+#endif
+      return 0;
+    }
+
+  if (strcmp(tool, "cancel_timer") == 0)
+    {
+#ifdef CONFIG_AI_AGENT_LVGL_UI
+      pet_care_alarm_cancel();
+      snprintf(obs, obs_size, "success");
+#else
+      snprintf(obs, obs_size, "unsupported");
+#endif
       return 0;
     }
 

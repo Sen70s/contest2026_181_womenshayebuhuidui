@@ -1,0 +1,1818 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index add75c3..ad7bfcb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -46,6 +46,7 @@ if(CONFIG_EXAMPLES_AI_AGENT_VELA)
+     src/tools/tool_get_time.c
+     src/tools/tool_web_search.c
+     src/tools/tool_cron.c
++    src/tools/tool_alarm.c
+     src/tools/tool_fetch_url.c
+     src/tools/tool_feishu_doc.c
+     src/tools/tool_feishu_chat.c
+@@ -102,6 +103,12 @@ if(CONFIG_EXAMPLES_AI_AGENT_VELA)
+   if(CONFIG_AI_AGENT_LVGL_UI)
+     list(APPEND AGENT_SRCS src/ui/lvgl_ui_channel.c)
+     list(APPEND AGENT_SRCS src/ui/pet_display.c)
++    # pet_care: proactive companion scheduler (idle care / alarm / hr alert);
++    # tick runs on the render thread, L2 goes through the message bus.
++    list(APPEND AGENT_SRCS src/ui/pet_care.c)
++    # hr_monitor: simulated heart-rate walk (scenario 3); threshold routes
++    # back into pet_care_hr_report.
++    list(APPEND AGENT_SRCS src/health/hr_monitor.c)
+     list(APPEND AGENT_SRCS src/ui/launcher_page.c)
+     list(APPEND AGENT_SRCS src/ui/about_page.c)
+     list(APPEND AGENT_SRCS src/ui/pet_page.c)
+@@ -300,6 +307,24 @@ if(CONFIG_EXAMPLES_AI_AGENT_VELA)
+       100
+   )
+ 
++  # "hr_set" exists only with the UI/care scheduler that owns hr_monitor.
++  if(CONFIG_AI_AGENT_LVGL_UI)
++    nuttx_add_application(
++      NAME
++        hr_set
++      SRCS
++        src/health/hr_cmd.c
++      INCLUDE_DIRECTORIES
++        ${AGENT_INCDIRS}
++      COMPILE_FLAGS
++        -Wno-error
++      STACKSIZE
++        2048
++      PRIORITY
++        100
++    )
++  endif()
++
+   # Force agent_main.c to recompile every build so that
+   # AGENT_BUILD_VERSION (__DATE__ " " __TIME__) stays fresh.
+   # We touch the source file before each build, which invalidates
+diff --git a/Kconfig b/Kconfig
+index fcb89cd..7eecd35 100644
+--- a/Kconfig
++++ b/Kconfig
+@@ -117,9 +117,50 @@ config AI_AGENT_TOUCH_PATH
+ 	default "/dev/input0"
+ 	depends on AI_AGENT_LVGL_UI
+ 	---help---
+-		Touchscreen input device used by the LVGL UI.
++		Framebuffer/LCD device used by the LVGL UI.
+ 		/dev/input0 on both SF32LB52 and the goldfish emulator.
+ 
++config AI_AGENT_CARE_IDLE_MIN
++	int "Idle minutes before proactive care"
++	default 5
++	range 1 120
++	depends on AI_AGENT_LVGL_UI
++
++config AI_AGENT_CARE_COOLDOWN_MIN
++	int "Minimum minutes between proactive care messages"
++	default 10
++	range 1 240
++	depends on AI_AGENT_LVGL_UI
++
++config AI_AGENT_CARE_QUIET_START
++	int "Quiet hours start (local hour)"
++	default 22
++	range 0 23
++	depends on AI_AGENT_LVGL_UI
++
++config AI_AGENT_CARE_QUIET_END
++	int "Quiet hours end (local hour)"
++	default 7
++	range 0 23
++	depends on AI_AGENT_LVGL_UI
++
++config AI_AGENT_HR_HIGH
++	int "Simulated heart-rate reminder threshold (bpm)"
++	default 120
++	range 90 180
++	depends on AI_AGENT_LVGL_UI
++
++config AI_AGENT_HR_ALERT_COOLDOWN_S
++	int "Heart-rate alert cooldown (seconds)"
++	default 60
++	range 10 3600
++	depends on AI_AGENT_LVGL_UI
++	---help---
++		Seconds between two heart-rate reminders during sustained
++		high readings. Kept short (60s) so back-to-back demo
++		injections are not swallowed; a single injected event still
++		only alerts once thanks to the per-event latch in hr_monitor.
++
+ config AI_AGENT_FEISHU
+ 	bool "Enable Feishu bot channel"
+ 	default y
+diff --git a/src/agent_main.c b/src/agent_main.c
+index 646b680..06d8ad8 100644
+--- a/src/agent_main.c
++++ b/src/agent_main.c
+@@ -84,9 +84,9 @@
+ #ifdef CONFIG_AI_AGENT_BLE_GATT
+ #include "infra/ble_cmd_handler.h"
+ #include "infra/ble_gatt.h"
++#endif
+ #include <bluetooth.h>
+ #include <bt_adapter.h>
+-#endif
+ 
+ static const char* TAG = "agent";
+ 
+@@ -146,6 +146,61 @@ static void net_state_change_cb(net_state_t state, void* arg)
+ }
+ #endif
+ 
++/* ── Classic-BT local name override ──────────────────────────────
++ * The PAN service names the adapter "<prefix>-<MAC>" on every adapter-on
++ * event (panu_service.c: pan_set_local_name_with_mac), which shows up in
++ * the phone's pairing list as a long pseudo-address. Override it app-side
++ * with a product name: wait for the adapter to reach ON, give the PAN
++ * handler a moment to finish, then write our name and read it back.
++ * One-shot task - it exits once done, so there is no resident cost.
++ * If BT is restarted, PAN re-applies its name; re-running this task
++ * (or a reboot) restores ours. */
++#define AGENT_BT_LOCAL_NAME  "小云手表"
++
++static void* bt_name_task(void* arg)
++{
++    bt_instance_t* ins;
++    char cur[64] = { 0 };
++    int i;
++
++    (void)arg;
++
++    ins = bluetooth_get_instance();
++    if (ins == NULL)
++    {
++        syslog(LOG_WARNING, "[%s] bt_name: no bt instance, skipped\n", TAG);
++        return NULL;
++    }
++
++    for (i = 0; i < 60; i++)
++    {
++        if (bt_adapter_get_state(ins) == BT_ADAPTER_STATE_ON)
++        {
++            break;
++        }
++        sleep(1);
++    }
++    if (i >= 60)
++    {
++        syslog(LOG_WARNING, "[%s] bt_name: adapter never reached ON\n", TAG);
++        return NULL;
++    }
++
++    /* Let PAN's own adapter-on handler land first, otherwise it would
++     * overwrite us a moment later. */
++    sleep(3);
++
++    if (bt_adapter_set_name(ins, AGENT_BT_LOCAL_NAME) != BT_STATUS_SUCCESS)
++    {
++        syslog(LOG_WARNING, "[%s] bt_name: set_name failed\n", TAG);
++        return NULL;
++    }
++
++    bt_adapter_get_name(ins, cur, sizeof(cur));
++    syslog(LOG_INFO, "[%s] bt_name: local name now \"%s\"\n", TAG, cur);
++    return NULL;
++}
++
+ /**
+  * Runs in a background thread: waits for network, then starts all
+  * network-dependent services. Main thread is NOT blocked.
+@@ -446,6 +501,13 @@ static void* outbound_dispatch_task(void* arg)
+             /* Mirror into the chat ring so the pet page history window shows
+              * console conversations too; this channel renders no bubble. */
+             lvgl_ui_channel_log(msg.content, false);
++#endif
++        } else if (strcmp(msg.channel, "care") == 0) {
++            /* pet_care L2 follow-up: rendered as a second bubble on the pet
++             * stage (L1 template already went out first). */
++            syslog(LOG_INFO, "[agent] [Care]: %s\n", msg.content);
++#ifdef CONFIG_AI_AGENT_LVGL_UI
++            lvgl_ui_channel_send(msg.content);
+ #endif
+         } else {
+             syslog(LOG_WARNING, "[%s] Unknown channel: %s\n", TAG, msg.channel);
+@@ -700,6 +762,13 @@ int ai_agent_main(int argc, char* argv[])
+     }
+     BOOT_LOG(&t0, "P5", "network_watch thread started (async)");
+ 
++    /* One-shot: rename the adapter once BT is up (see bt_name_task). */
++    if (agent_task_create(bt_name_task, "bt_name", 4096, NULL,
++            AGENT_OUTBOUND_PRIO)
++        != OK) {
++        syslog(LOG_WARNING, "[%s] Failed to start bt_name thread\n", TAG);
++    }
++
+     /* ── Phase 6: CLI thread — all services now in known state ── */
+     {
+         int rc = nsh_commands_start();
+diff --git a/src/core/agent_loop.c b/src/core/agent_loop.c
+index 554750d..e5d8e9d 100644
+--- a/src/core/agent_loop.c
++++ b/src/core/agent_loop.c
+@@ -1352,6 +1352,15 @@ static char* run_react_loop(const char* sys_prompt, cJSON* messages,
+     if (!final_text && iteration >= AGENT_AI_AGENT_MAX_TOOL_ITER) {
+         final_text = force_finish_reply(sys_prompt, messages);
+         agent_trace_end(&trace, AGENT_TRACE_TIMEOUT);
++    } else if (!final_text && trace.total_tool_calls > 0) {
++        /* Tools ran but the model closed with no text (observed with
++         * StepFun right after a successful set_alarm). The action already
++         * happened on the device, so confirm it instead of apologising. */
++        final_text = strdup("好的，已经为你安排好了。");
++        syslog(LOG_INFO,
++            "[%s] Empty closing text after %d tool call(s); confirming\n",
++            TAG, trace.total_tool_calls);
++        agent_trace_end(&trace, AGENT_TRACE_OK);
+     } else if (watchdog_fired) {
+         agent_trace_end(&trace, AGENT_TRACE_TIMEOUT);
+     } else if (final_text) {
+diff --git a/src/core/message_bus.c b/src/core/message_bus.c
+index 78f4eeb..ff27791 100644
+--- a/src/core/message_bus.c
++++ b/src/core/message_bus.c
+@@ -217,6 +217,15 @@ int message_bus_push_inbound(const agent_msg_t *msg)
+     return msg_queue_push(&g_inbound_queue, msg, AGENT_BUS_PUSH_TIMEOUT_MS);
+ }
+ 
++int message_bus_try_push_inbound(const agent_msg_t *msg)
++{
++    if (msg == NULL) {
++        return ERROR;
++    }
++
++    return msg_queue_push(&g_inbound_queue, msg, 0);
++}
++
+ int message_bus_pop_inbound(agent_msg_t *msg, uint32_t timeout_ms)
+ {
+     if (msg == NULL) {
+diff --git a/src/core/message_bus.h b/src/core/message_bus.h
+index d74f405..5e5395a 100644
+--- a/src/core/message_bus.h
++++ b/src/core/message_bus.h
+@@ -56,6 +56,10 @@ void message_bus_wakeup(void);
+  *  On failure (queue full / timeout) the caller still owns them. */
+ int message_bus_push_inbound(const agent_msg_t *msg);
+ 
++/** Try to push inbound without waiting.  On success the bus owns heap members;
++ *  on failure the caller retains ownership.  Use from render/UI threads. */
++int message_bus_try_push_inbound(const agent_msg_t *msg);
++
+ /** Block until an inbound message is available (or timeout expires).
+  *  Caller must free msg->content / msg->image_b64 when done. */
+ int message_bus_pop_inbound(agent_msg_t *msg, uint32_t timeout_ms);
+diff --git a/src/health/hr_cmd.c b/src/health/hr_cmd.c
+new file mode 100644
+index 0000000..40bcece
+--- /dev/null
++++ b/src/health/hr_cmd.c
+@@ -0,0 +1,44 @@
++/*
++ * hr_cmd.c - NSH builtin: drive the simulated heart-rate monitor.
++ *
++ * `hr_set <bpm>`    set the simulated baseline (clamped 65-95), show it
++ * `hr_set event`    inject a heart-rate spike event (rises ~30s, falls ~30s)
++ * `hr_set`          show the current value and threshold
++ *
++ * Team 181 - Contest 2026
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "hr_monitor.h"
++
++int hr_set_main(int argc, char *argv[])
++{
++  if (argc < 2)
++    {
++      printf("hr: current %d bpm, threshold %d\n",
++             hr_monitor_current(), HR_MONITOR_HIGH_DEFAULT);
++      return 0;
++    }
++
++  if (strcmp(argv[1], "event") == 0)
++    {
++      hr_monitor_inject_event();
++      printf("hr: event injected - value will climb past %d within %ds\n",
++             HR_MONITOR_HIGH_DEFAULT, HR_MONITOR_EVENT_RISE_S);
++      return 0;
++    }
++
++  {
++    int bpm = atoi(argv[1]);
++    if (bpm <= 0)
++      {
++        printf("hr_set: invalid bpm '%s'\n", argv[1]);
++        return 1;
++      }
++    printf("hr: baseline %d bpm\n", hr_monitor_set(bpm));
++    return 0;
++  }
++}
+diff --git a/src/health/hr_monitor.c b/src/health/hr_monitor.c
+new file mode 100644
+index 0000000..5bda47e
+--- /dev/null
++++ b/src/health/hr_monitor.c
+@@ -0,0 +1,156 @@
++/*
++ * hr_monitor.c - Simulated heart-rate random walk + threshold check.
++ *
++ * 随机游走：基线 ±1 bpm/秒的小扰动，夹在基线 ±6 的走廊里；
++ * 注入事件后先向上游走到峰值再指数回落——曲线像一次「爬楼后休息」，
++ * 演示时视觉上可信。全部状态是几个 static 标量：无堆、无线程。
++ *
++ * Team 181 - Contest 2026
++ */
++
++#include <pthread.h>
++#include <stdlib.h>
++#include <syslog.h>
++#include <time.h>
++
++#include "hr_monitor.h"
++#include "ui/pet_care.h"
++
++#define TAG "hr"
++
++/****************************************************************************
++ * Private Data
++ ****************************************************************************/
++
++static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
++static unsigned int s_rand_state = 1; /* 模块私有 PRNG */
++static int  s_base = 78;          /* 模拟基线（hr_set 可改） */
++static int  s_current = 78;       /* 当前值 */
++static bool s_event_active;        /* 注入事件进行中 */
++static int  s_event_elapsed;       /* 事件进行秒数 */
++static bool s_alerted_this_event;  /* 本事件（或本段高值）已告警过 */
++
++/* 简易夹取 */
++static int clampi(int v, int lo, int hi)
++{
++  return v < lo ? lo : (v > hi ? hi : v);
++}
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++void hr_monitor_tick(void)
++{
++  int alert_bpm = 0;
++  int next;
++  int peak = 0;
++
++  pthread_mutex_lock(&s_lock);
++  next = s_current;
++  if (s_rand_state == 1)
++    {
++      s_rand_state = (unsigned int)time(NULL) ^ (unsigned int)clock();
++    }
++
++  /* 随机游走一步：±1 bpm */
++  next += (int)(rand_r(&s_rand_state) % 3) - 1;
++
++  if (s_event_active)
++    {
++      s_event_elapsed++;
++
++      if (s_event_elapsed <= HR_MONITOR_EVENT_RISE_S)
++        {
++          /* 上升段：向峰值线性爬升 + 扰动 */
++          peak = HR_MONITOR_EVENT_PEAK_MIN +
++                 (int)(rand_r(&s_rand_state) %
++                       (HR_MONITOR_EVENT_PEAK_MAX -
++                        HR_MONITOR_EVENT_PEAK_MIN + 1));
++          next = s_current + (peak - s_current + 2) / 3;  /* 每秒收 1/3 差距 */
++        }
++      else if (s_event_elapsed <= HR_MONITOR_EVENT_RISE_S +
++                                   HR_MONITOR_EVENT_FALL_S)
++        {
++          /* 回落段：向基线收 1/4 差距（比上升慢，像喘匀气） */
++          next = s_current - (s_current - s_base + 3) / 4;
++        }
++      else
++        {
++          s_event_active = false;   /* 事件结束，回到日常游走 */
++        }
++    }
++  else
++    {
++      /* 日常：把值拉回基线走廊，防止游走出界 */
++      if (next > s_base + 6)
++        {
++          next = s_base + 6;
++        }
++      if (next < s_base - 6)
++        {
++          next = s_base - 6;
++        }
++    }
++
++  s_current = clampi(next, 40, 200);
++
++  /* 阈值判定：超过 HR_MONITOR_HIGH_DEFAULT 且本段没报过 → pet_care 告警。
++   * 冷却窗在 pet_care_hr_report 内部（10 分钟），这里的 s_alerted 只是
++   * 保证「同一事件不重复报」，跨事件的高值靠 pet_care 冷却兜底。 */
++  if (s_current > HR_MONITOR_HIGH_DEFAULT)
++    {
++      if (!s_alerted_this_event)
++        {
++          s_alerted_this_event = true;
++          alert_bpm = s_current;
++        }
++    }
++  else if (s_current < HR_MONITOR_HIGH_DEFAULT - 15)
++    {
++      /* 回到安全区间足够深才重置告警标志，避免在阈值附近抖动重报 */
++      s_alerted_this_event = false;
++    }
++  pthread_mutex_unlock(&s_lock);
++
++  /* 回调可能排 UI 消息并获取 pet_care 锁，必须在 hr 锁外执行。 */
++  if (alert_bpm > 0)
++    {
++      pet_care_hr_report(alert_bpm);
++    }
++}
++
++int hr_monitor_set(int base_bpm)
++{
++  int actual;
++
++  pthread_mutex_lock(&s_lock);
++  s_base = clampi(base_bpm, HR_MONITOR_BASE_MIN, HR_MONITOR_BASE_MAX);
++  actual = s_base;
++  pthread_mutex_unlock(&s_lock);
++
++  syslog(LOG_INFO, "[%s] baseline set to %d bpm\n", TAG, actual);
++  return actual;
++}
++
++void hr_monitor_inject_event(void)
++{
++  pthread_mutex_lock(&s_lock);
++  s_event_active = true;
++  s_event_elapsed = 0;
++  s_alerted_this_event = false;
++  pthread_mutex_unlock(&s_lock);
++
++  syslog(LOG_INFO, "[%s] event injected (peak in %ds)\n",
++         TAG, HR_MONITOR_EVENT_RISE_S);
++}
++
++int hr_monitor_current(void)
++{
++  int current;
++
++  pthread_mutex_lock(&s_lock);
++  current = s_current;
++  pthread_mutex_unlock(&s_lock);
++  return current;
++}
+diff --git a/src/health/hr_monitor.h b/src/health/hr_monitor.h
+new file mode 100644
+index 0000000..ddf946f
+--- /dev/null
++++ b/src/health/hr_monitor.h
+@@ -0,0 +1,65 @@
++/*
++ * hr_monitor.h - Simulated heart-rate monitor with threshold alert.
++ *
++ * 场景③（心率关怀）：真实传感器是赛后演进项（SIM/传感器在用户的
++ * 演进路线里），大赛阶段用随机游走模拟器 + 阈值告警验证整条链路：
++ * hr_monitor_tick（1Hz，由 pet_care 转发）→ 超阈值 →
++ * pet_care_hr_report → 桌宠担心表情 + 告警气泡 + 历史记录。
++ *
++ * NSH 命令（hr_cmd.c）：
++ *   hr_set <bpm>    设定模拟基线（演示不同人群）
++ *   hr_set event    注入一次心率飙升事件（60s 内游走到高值再回落）
++ *
++ * 措辞约束：全部文案只用「提醒/记录」，不用「诊断/监测健康状态」。
++ *
++ * Team 181 - Contest 2026
++ */
++
++#ifndef AI_AGENT_HR_MONITOR_H
++#define AI_AGENT_HR_MONITOR_H
++
++#include <nuttx/config.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* 阈值（bpm）：超过即触发 pet_care_hr_report。
++ * Kconfig 项 AI_AGENT_HR_HIGH 的编译期兜底。 */
++#ifdef CONFIG_AI_AGENT_HR_HIGH
++#  define HR_MONITOR_HIGH_DEFAULT CONFIG_AI_AGENT_HR_HIGH
++#else
++#  define HR_MONITOR_HIGH_DEFAULT 120
++#endif
++
++/* 模拟基线范围 */
++#define HR_MONITOR_BASE_MIN      65
++#define HR_MONITOR_BASE_MAX      95
++
++/* 注入事件的目标区间与持续时间 */
++#define HR_MONITOR_EVENT_PEAK_MIN   130
++#define HR_MONITOR_EVENT_PEAK_MAX   150
++#define HR_MONITOR_EVENT_RISE_S     30   /* 游走到峰值用时（秒） */
++#define HR_MONITOR_EVENT_FALL_S     30   /* 峰值回落到基线用时（秒） */
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++/* 1Hz 心率模拟步进（由 pet_care_tick 的 1Hz 分频转发调用） */
++void hr_monitor_tick(void);
++
++/* 设定模拟基线（clamp 到 65-95）。返回实际生效值。 */
++int  hr_monitor_set(int base_bpm);
++
++/* 注入一次心率飙升事件（同刻已在事件中则刷新为新的 60s 窗口）。 */
++void hr_monitor_inject_event(void);
++
++/* 当前值（只读，供 hr_set 状态打印） */
++int  hr_monitor_current(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* AI_AGENT_HR_MONITOR_H */
+diff --git a/src/infra/config_store.c b/src/infra/config_store.c
+index da6c428..d46b1b3 100644
+--- a/src/infra/config_store.c
++++ b/src/infra/config_store.c
+@@ -74,25 +74,61 @@ static cJSON *load_json(void)
+ 
+     cJSON *root = cJSON_Parse(buf);
+     free(buf);
+-    return root ? root : cJSON_CreateObject();
++    if (root) {
++        return root;
++    }
++
++    /* Parse failure used to be silent, and the next claw_config_set()
++     * would then merge into an empty object and save - wiping every other
++     * key in the file. Make it loud. */
++    syslog(LOG_ERR, "[%s] %s is not valid JSON (%ld bytes); "
++           "starting from an empty object\n",
++           TAG, AGENT_CONFIG_FILE, (long)sz);
++    return cJSON_CreateObject();
+ }
+ 
++#define AGENT_CONFIG_TMP AGENT_CONFIG_FILE ".tmp"
++
+ static int save_json(cJSON *root)
+ {
+     char *str = cJSON_PrintUnformatted(root);
+     if (!str) return ERROR;
+ 
+-    /* Use open() with explicit 0600 to ensure config file is owner-only.
+-     * fopen("w") inherits umask which may be too permissive. */
+-    int fd = open(AGENT_CONFIG_FILE,
++    /* Write to a temp file and rename over the target: a partial write
++     * (power cut, flash error) then leaves the previous config intact
++     * instead of a truncated file. That truncation was observed on
++     * hardware - config.json came back holding only the DNS keys after a
++     * failed write, which silently dropped the LLM backend and API key.
++     * 0600 on open() keeps the file owner-only (fopen's umask may not). */
++    int fd = open(AGENT_CONFIG_TMP,
+                   O_WRONLY | O_CREAT | O_TRUNC, 0600);
+     if (fd < 0) { free(str); return ERROR; }
+ 
+     FILE *f = fdopen(fd, "w");
+-    if (!f) { close(fd); free(str); return ERROR; }
+-    fputs(str, f);
+-    fclose(f);
++    if (!f) { close(fd); unlink(AGENT_CONFIG_TMP); free(str); return ERROR; }
++
++    int rc = OK;
++    if (fputs(str, f) == EOF || fflush(f) != 0) {
++        syslog(LOG_ERR, "[%s] Short write to %s: %d\n",
++               TAG, AGENT_CONFIG_TMP, errno);
++        rc = ERROR;
++    }
++    if (fclose(f) != 0) {
++        rc = ERROR;
++    }
+     free(str);
++
++    if (rc != OK) {
++        unlink(AGENT_CONFIG_TMP);
++        return ERROR;
++    }
++
++    if (rename(AGENT_CONFIG_TMP, AGENT_CONFIG_FILE) != 0) {
++        syslog(LOG_ERR, "[%s] rename %s -> %s failed: %d\n",
++               TAG, AGENT_CONFIG_TMP, AGENT_CONFIG_FILE, errno);
++        unlink(AGENT_CONFIG_TMP);
++        return ERROR;
++    }
+     return OK;
+ }
+ 
+diff --git a/src/llm/llm_router.c b/src/llm/llm_router.c
+index aa586f2..6a65c69 100644
+--- a/src/llm/llm_router.c
++++ b/src/llm/llm_router.c
+@@ -49,7 +49,10 @@ static pthread_mutex_t s_router_lock = PTHREAD_MUTEX_INITIALIZER;
+ #define MAX_CONSECUTIVE_FAILURES 3
+ 
+ /* Auto-recovery: disabled backends retry after this many seconds */
+-#define RECOVERY_INTERVAL_SEC 300
++/* Transient phone-tethering flaps used to cost a full 5 minutes of
++ * silent local-model fallback; one minute is enough to stop hammering
++ * a genuinely dead backend. */
++#define RECOVERY_INTERVAL_SEC 60
+ 
+ /* Backoff: ignore rapid failures within this window (seconds) */
+ #define BACKOFF_DEBOUNCE_SEC 5
+diff --git a/src/tools/skill_loader.c b/src/tools/skill_loader.c
+index ea21931..65bdb5f 100644
+--- a/src/tools/skill_loader.c
++++ b/src/tools/skill_loader.c
+@@ -132,7 +132,28 @@ static const char *TAG = "skills";
+     "2. Parse user request into schedule_type and timing\n" \
+     "3. Set channel/chat_id matching the message source (feishu/system)\n" \
+     "4. cron_add to create the job\n" \
+-    "5. Confirm with trigger time\n"
++    "5. Confirm with trigger time\n\n" \
++    "## Exception: reminders that must reach the user on the watch\n" \
++    "If the request came from the watch itself (nsh ask / key press / voice), use the\n" \
++    "关怀叫醒 (care-reminder) skill instead: it calls set_alarm, so the device\n" \
++    "previews one minute ahead, speaks up on time and escalates if nobody reacts.\n" \
++    "cron_add only drops a silent line into the chat history and will not wake anyone.\n"
++
++#define BUILTIN_CARE_ALARM \
++    "# 关怀叫醒\n\n" \
++    "手表上的提醒/叫醒一律用本技能（优先于 reminder/cron）：到点前先预告，到点主动开口叫醒，没人理会会再催一次。\n\n" \
++    "## 何时使用（优先于 reminder）\n" \
++    "用户说「X 分钟后提醒我 / 叫我 / 喊我起床」，或指定了某个钟点——**凡是希望用户在手表前被提醒到的，都用本技能**。\n" \
++    "不要用 cron_add / reminder 处理这类请求：cron 通知只在消息历史里静默出现，\n" \
++    "而 set_alarm 会让设备端主动开口（预告 + 叫醒 + 催促），这才是本产品的核心能力。\n\n" \
++    "## 怎么用\n" \
++    "1. 先算分钟数：用户给了时长（如 25 分钟）直接用；给了钟点先用 get_current_time 取当前时间再换算\n" \
++    "2. 调 set_alarm，参数 minutes，范围 1-1440\n" \
++    "3. 用用户的语言简短确认，并说明设备行为：到点前 1 分钟先预告、到点叫醒、没反应会再催\n" \
++    "4. 用户要取消时调 cancel_alarm\n" \
++    "5. 同一次请求只调一次 set_alarm，不要重复调用\n\n" \
++    "## 语气\n" \
++    "像同伴而不是闹钟：简短、带一点关心，不要长篇大论。\n"
+ 
+ #define BUILTIN_NOTE_TAKER \
+     "# Note Taker\n\n" \
+@@ -208,6 +229,7 @@ static const builtin_skill_t s_builtins[] = {
+     { "system-health",  BUILTIN_SYSTEM_HEALTH  },
+     { "reminder",       BUILTIN_REMINDER       },
+     { "note-taker",     BUILTIN_NOTE_TAKER     },
++    { "care-reminder",  BUILTIN_CARE_ALARM     },
+     { "translate",      BUILTIN_TRANSLATE      },
+     { "news-digest",    BUILTIN_NEWS_DIGEST    },
+     { "feishu-test",    BUILTIN_FEISHU_TEST    },
+@@ -223,12 +245,23 @@ static void install_builtin(const builtin_skill_t *skill)
+     char path[128];
+     snprintf(path, sizeof(path), "%s%s.md", AGENT_SKILLS_DIR, skill->filename);
+ 
+-    /* Check if already exists */
++    /* Compare the installed copy with the built-in text: only installing
++     * when the file is missing meant wording fixes never reached a board
++     * whose /data already had the file from an earlier firmware. Skipping
++     * identical content keeps this cheap at every boot. */
+     FILE *f = fopen(path, "r");
+     if (f) {
++        static char cur[2048];
++        size_t n = fread(cur, 1, sizeof(cur) - 1, f);
++        cur[n] = '\0';
+         fclose(f);
+-        syslog(LOG_DEBUG, "[%s] Skill exists: %s\n", TAG, path);
+-        return;
++
++        size_t want = strlen(skill->content);
++        if (n == want && memcmp(cur, skill->content, want) == 0) {
++            syslog(LOG_DEBUG, "[%s] Skill up to date: %s\n", TAG, path);
++            return;
++        }
++        syslog(LOG_INFO, "[%s] Updating built-in skill: %s\n", TAG, path);
+     }
+ 
+     /* Write built-in skill */
+diff --git a/src/tools/tool_alarm.c b/src/tools/tool_alarm.c
+new file mode 100644
+index 0000000..c75c37e
+--- /dev/null
++++ b/src/tools/tool_alarm.c
+@@ -0,0 +1,118 @@
++/*
++ * Copyright (C) 2026 Xiaomi Corporation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++/*
++ * tool_alarm.c - Cloud tools that arm the on-device proactive alarm.
++ *
++ * Thin adapters over pet_care_alarm_set()/pet_care_alarm_cancel(): the care
++ * scheduler owns the state machine (T-60s preview, T0 wake-up, escalation
++ * when the user does not react, activity acknowledgement) and renders it on
++ * the pet stage. Keeping the tools thin means the cloud path and the
++ * on-device set_timer path share exactly one implementation.
++ */
++
++#include "tools/tool_alarm.h"
++#include "agent_compat.h"
++
++#include <cJSON.h>
++#include <stdlib.h>
++#include <string.h>
++#include <syslog.h>
++
++#ifdef CONFIG_AI_AGENT_LVGL_UI
++#include "ui/pet_care.h"
++#endif
++
++static const char *TAG = "tool_alarm";
++
++/* Accept both numeric and string forms - models emit "10" and 10 alike. */
++static int read_minutes(cJSON *root)
++{
++    cJSON *item = cJSON_GetObjectItem(root, "minutes");
++
++    if (item == NULL) {
++        return -1;
++    }
++    if (cJSON_IsNumber(item)) {
++        return (int)item->valuedouble;
++    }
++    if (cJSON_IsString(item) && item->valuestring != NULL) {
++        return atoi(item->valuestring);
++    }
++    return -1;
++}
++
++int tool_set_alarm_execute(const char *input_json, char *output,
++                           size_t output_size)
++{
++    cJSON *root;
++    int minutes;
++
++#ifdef CONFIG_AI_AGENT_LVGL_UI
++    root = cJSON_Parse(input_json);
++    if (root == NULL) {
++        snprintf(output, output_size, "Error: invalid JSON input");
++        return ERROR;
++    }
++
++    minutes = read_minutes(root);
++    cJSON_Delete(root);
++
++    if (minutes <= 0 || minutes > 24 * 60) {
++        snprintf(output, output_size,
++            "Error: need \"minutes\" between 1 and 1440 (got %d). "
++            "Example: {\"minutes\":10}", minutes);
++        return ERROR;
++    }
++
++    if (pet_care_alarm_set(minutes) != 0) {
++        snprintf(output, output_size,
++            "Error: alarm not armed (scheduler rejected %d minutes)",
++            minutes);
++        return ERROR;
++    }
++
++    syslog(LOG_INFO, "[%s] alarm armed for %d min (cloud tool)\n",
++           TAG, minutes);
++    snprintf(output, output_size,
++        "{\"status\":\"armed\",\"minutes\":%d,"
++        "\"device_behavior\":\"preview 1 minute before, wake-up call on "
++        "time, escalation if no reaction\"}", minutes);
++    return OK;
++#else
++    (void)input_json;
++    (void)minutes;
++    snprintf(output, output_size,
++        "Error: this build has no care scheduler");
++    return ERROR;
++#endif
++}
++
++int tool_cancel_alarm_execute(const char *input_json, char *output,
++                              size_t output_size)
++{
++    (void)input_json;
++
++#ifdef CONFIG_AI_AGENT_LVGL_UI
++    pet_care_alarm_cancel();
++    snprintf(output, output_size, "{\"status\":\"cancelled\"}");
++    return OK;
++#else
++    snprintf(output, output_size,
++        "Error: this build has no care scheduler");
++    return ERROR;
++#endif
++}
+diff --git a/src/tools/tool_alarm.h b/src/tools/tool_alarm.h
+new file mode 100644
+index 0000000..13e3050
+--- /dev/null
++++ b/src/tools/tool_alarm.h
+@@ -0,0 +1,46 @@
++/*
++ * Copyright (C) 2026 Xiaomi Corporation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++/*
++ * tool_alarm.h - Cloud-LLM tools that drive the on-device care scheduler.
++ *
++ * The on-device model has its own set_timer tool, but the cloud LLM's tool
++ * set had no way to reach the watch's proactive alarm (preview 1 minute
++ * before, wake-up call on time, escalation if nobody reacts). These two
++ * tools close that gap so a Skill can hand a timing request to the device.
++ */
++
++#ifndef __APPS_AI_AGENT_TOOLS_TOOL_ALARM_H
++#define __APPS_AI_AGENT_TOOLS_TOOL_ALARM_H
++
++#include <stddef.h>
++
++/**
++ * Arm the watch alarm.
++ * Input JSON: { minutes }
++ *   minutes - whole minutes from now, 1..1440
++ */
++int tool_set_alarm_execute(const char *input_json, char *output,
++                           size_t output_size);
++
++/**
++ * Cancel a pending alarm.
++ * Input JSON: {} (no required fields)
++ */
++int tool_cancel_alarm_execute(const char *input_json, char *output,
++                              size_t output_size);
++
++#endif /* __APPS_AI_AGENT_TOOLS_TOOL_ALARM_H */
+diff --git a/src/tools/tool_registry.c b/src/tools/tool_registry.c
+index 33583e7..54b3488 100644
+--- a/src/tools/tool_registry.c
++++ b/src/tools/tool_registry.c
+@@ -27,6 +27,7 @@
+ #endif
+ #include "tools/tool_guard.h"
+ #include "tools/tool_control.h"
++#include "tools/tool_alarm.h"
+ #include "tools/tool_cron.h"
+ #include "tools/tool_feishu_chat.h"
+ #include "tools/tool_feishu_doc.h"
+@@ -210,6 +211,25 @@ int tool_registry_init(void)
+         "Get current date, time, and UNIX epoch.",
+         tool_get_time_execute);
+ 
++#ifdef CONFIG_AI_AGENT_LVGL_UI
++    /* Watch alarm: the device previews one minute ahead, wakes the user at
++     * the set time, and escalates if nobody reacts. */
++    REGISTER_TOOL("set_alarm",
++        "Remind the user ON THE WATCH after N minutes. PREFER THIS over "
++        "cron_add whenever the request came from the watch or the user "
++        "should be alerted on the device: the watch previews 1 minute "
++        "before, speaks up at the set time and escalates until the user "
++        "touches it. cron_add only appends a silent line to the history.",
++        TOOL_SCHEMA_BEGIN()
++            TOOL_PARAM_NUM("minutes", "Whole minutes from now, 1-1440")
++                TOOL_SCHEMA_END_REQUIRED("\"minutes\""),
++        tool_set_alarm_execute);
++
++    REGISTER_TOOL_NO_PARAMS("cancel_alarm",
++        "Cancel the currently armed watch alarm.",
++        tool_cancel_alarm_execute);
++#endif
++
+     /* File tools */
+     REGISTER_TOOL("read_file",
+         "Read a file. Path must start with " AGENT_DATA_DIR "/.",
+diff --git a/src/ui/key_input.c b/src/ui/key_input.c
+index 8db3cde..ade5ab0 100644
+--- a/src/ui/key_input.c
++++ b/src/ui/key_input.c
+@@ -34,6 +34,7 @@
+ #include "pet_page.h"
+ #include "lvgl_ui_channel.h"
+ #include "core/message_bus.h"
++#include "pet_care.h"
+ 
+ #define TAG "key"
+ 
+@@ -138,7 +139,8 @@ static void key_ask_shown_cb(void *arg)
+ static void key_action_open_pet(void)
+ {
+     syslog(LOG_INFO, "[%s] KEY1: open pet page\n", TAG);
+-    lv_async_call(key_open_pet_cb, NULL);
++    /* key monitor thread -> LVGL: post queue, not lv_async_call (Round 27) */
++    lvgl_ui_post(key_open_pet_cb, NULL);
+ }
+ 
+ static void key_action_ask_model(void)
+@@ -165,7 +167,7 @@ static void key_action_ask_model(void)
+ 
+     shown = strdup(question);
+     if (shown != NULL) {
+-        lv_async_call(key_ask_shown_cb, shown);
++        lvgl_ui_post(key_ask_shown_cb, shown);
+     }
+ 
+     strncpy(msg.channel, "cli", sizeof(msg.channel) - 1);
+@@ -252,6 +254,10 @@ static void *key_monitor_thread(void *arg)
+         }
+         last_event_ms = key_now_ms();
+ 
++        /* 任何按键都算用户活动：复位空闲关怀计时（闹钟 pending 时
++         * note_activity 内部按唤醒确认处理） */
++        pet_care_note_activity();
++
+         if (pressed & KEY_BIT_KEY1) {
+             key_action_open_pet();
+         }
+diff --git a/src/ui/lvgl_ui_channel.c b/src/ui/lvgl_ui_channel.c
+index 7289201..7636095 100644
+--- a/src/ui/lvgl_ui_channel.c
++++ b/src/ui/lvgl_ui_channel.c
+@@ -25,10 +25,13 @@
+ #include <lvgl/lvgl.h>
+ #include <lvgl/src/drivers/nuttx/lv_nuttx_entry.h>
+ 
++#include <pthread.h>
++
+ #include "voice/voice_channel.h"
+ #include "pet_display.h"
+ #include "pet_page.h"
+ #include "launcher_page.h"
++#include "pet_care.h"
+ 
+ /* Custom CJK subset font (generated by tools/gen_cjk_font.sh) */
+ extern const lv_font_t ui_font_cjk_18;
+@@ -156,9 +159,32 @@ static void pet_back_idle_timer_cb(lv_timer_t *timer)
+     pet_display_set_emotion(PET_EMOTION_IDLE);
+ }
+ 
++typedef struct {
++    uint32_t ms;
++} pet_idle_req_t;
++
++static void pet_back_idle_post_cb(void *data)
++{
++    pet_idle_req_t *req = data;
++    lv_timer_t *t = lv_timer_create(pet_back_idle_timer_cb, req->ms, NULL);
++    if (t != NULL) {
++        lv_timer_set_auto_delete(t, true);
++    }
++    free(req);
++}
++
++/* Thread-safe wrapper: lvgl_ui_channel_send() runs on the agent
++ * (outbound dispatch) thread, so the lv_timer_create must be posted. */
+ static void pet_back_idle_after(uint32_t ms)
+ {
+-    lv_timer_create(pet_back_idle_timer_cb, ms, NULL);
++    pet_idle_req_t *req = malloc(sizeof(*req));
++    if (req == NULL) {
++        return;
++    }
++    req->ms = ms;
++    if (lvgl_ui_post(pet_back_idle_post_cb, req) != 0) {
++        free(req);
++    }
+ }
+ 
+ /* ── Async message passing (agent threads -> LVGL thread) ──────── */
+@@ -168,6 +194,86 @@ typedef struct {
+     bool is_user;
+ } ui_msg_t;
+ 
++/* ── Cross-thread LVGL posting ────────────────────────────────────
++ * LVGL is built with LV_OS_NONE here: no internal locking. Calling
++ * lv_async_call() (which mutates the timer list) from agent/key/NSH
++ * threads races with lv_timer_handler() on the render thread and can
++ * corrupt the timer list -- observed as the render thread never waking
++ * from usleep() again after an `ask` reply (Round 27 dumpstack).
++ *
++ * All non-render threads therefore enqueue {cb, data} under a mutex;
++ * the render thread drains the queue each cycle and performs the
++ * lv_async_call() itself. malloc/queue ops never touch LVGL state. */
++
++typedef struct ui_post_node_s {
++    lv_async_cb_t cb;
++    void *data;
++    struct ui_post_node_s *next;
++} ui_post_node_t;
++
++static pthread_mutex_t s_post_lock = PTHREAD_MUTEX_INITIALIZER;
++static ui_post_node_t *s_post_head;
++static ui_post_node_t *s_post_tail;
++/* recycled nodes so a busy console does not churn the heap */
++static ui_post_node_t *s_post_free;
++
++int lvgl_ui_post(lv_async_cb_t cb, void *data)
++{
++    ui_post_node_t *n;
++
++    if (cb == NULL) {
++        return -1;
++    }
++
++    pthread_mutex_lock(&s_post_lock);
++    n = s_post_free;
++    if (n != NULL) {
++        s_post_free = n->next;
++    } else {
++        n = malloc(sizeof(*n));
++    }
++    if (n == NULL) {
++        pthread_mutex_unlock(&s_post_lock);
++        return -1;
++    }
++    n->cb = cb;
++    n->data = data;
++    n->next = NULL;
++    if (s_post_tail != NULL) {
++        s_post_tail->next = n;
++    } else {
++        s_post_head = n;
++    }
++    s_post_tail = n;
++    pthread_mutex_unlock(&s_post_lock);
++    return 0;
++}
++
++/* Render thread only: drain pending posts. Runs before this cycle's
++ * lv_timer_handler() so posted work lands in the same cycle it was
++ * queued for whenever possible. */
++static void ui_post_flush(void)
++{
++    ui_post_node_t *list;
++
++    pthread_mutex_lock(&s_post_lock);
++    list = s_post_head;
++    s_post_head = NULL;
++    s_post_tail = NULL;
++    pthread_mutex_unlock(&s_post_lock);
++
++    while (list != NULL) {
++        ui_post_node_t *n = list;
++        list = list->next;
++        lv_async_call(n->cb, n->data);
++
++        pthread_mutex_lock(&s_post_lock);
++        n->next = s_post_free;
++        s_post_free = n;
++        pthread_mutex_unlock(&s_post_lock);
++    }
++}
++
+ /* Set the bubble text, truncated so the bubble stays short enough to
+  * fully fit below the screen top edge. */
+ static void bubble_set_text(const char *text)
+@@ -583,8 +689,13 @@ static void *render_thread(void *arg)
+ 
+     ui_build();
+ 
++    /* 关怀调度器挂 render 线程：内部按墙钟秒做 1Hz 门控 */
++    pet_care_init();
++
+     while (s_ui.running) {
++        ui_post_flush();     /* 跨线程投递的 LVGL 操作统一在此线程落地 */
+         lv_timer_handler();
++        pet_care_tick();
+         usleep(RENDER_PERIOD_US);
+     }
+     return NULL;
+@@ -714,10 +825,11 @@ void lvgl_ui_enter_pet_stage(void)
+     }
+ }
+ 
+-int lvgl_ui_channel_send(const char *text)
++/* Common first half of normal/silent sends.  One call queues one bubble and
++ * one history entry; callers independently choose visual/TTS behavior. */
++static int queue_agent_bubble(const char *text)
+ {
+     ui_msg_t *payload;
+-    pet_emotion_t emotion;
+ 
+     if (!text || text[0] == '\0') {
+         return -EINVAL;
+@@ -727,7 +839,6 @@ int lvgl_ui_channel_send(const char *text)
+         return -EINVAL;
+     }
+ 
+-    /* schedule the bubble update on the LVGL thread */
+     payload = malloc(sizeof(ui_msg_t));
+     if (!payload) {
+         return -ENOMEM;
+@@ -735,7 +846,32 @@ int lvgl_ui_channel_send(const char *text)
+     memset(payload, 0, sizeof(*payload));
+     strncpy(payload->text, text, MSG_MAX_LEN - 1);
+     payload->is_user = false;
+-    lv_async_call(bubble_update_async_cb, payload);
++    lvgl_ui_post(bubble_update_async_cb, payload);
++    return 0;
++}
++
++int lvgl_ui_channel_send_silent(const char *text, pet_emotion_t emotion)
++{
++    int ret = queue_agent_bubble(text);
++
++    if (ret != 0) {
++        return ret;
++    }
++    /* Silent means no TTS, not no expression. */
++    pet_display_set_emotion(emotion);
++    pet_back_idle_after(1500);
++    return 0;
++}
++
++int lvgl_ui_channel_send(const char *text)
++{
++    pet_emotion_t emotion;
++    int ret;
++
++    ret = queue_agent_bubble(text);
++    if (ret != 0) {
++        return ret;
++    }
+ 
+     /* emotion follows the reply content */
+     emotion = emotion_from_text(text);
+@@ -770,7 +906,7 @@ int lvgl_ui_channel_send_user(const char *text)
+     memset(payload, 0, sizeof(*payload));
+     strncpy(payload->text, text, MSG_MAX_LEN - 1);
+     payload->is_user = true;
+-    lv_async_call(bubble_update_async_cb, payload);
++    lvgl_ui_post(bubble_update_async_cb, payload);
+     return 0;
+ }
+ 
+@@ -813,6 +949,6 @@ int lvgl_ui_channel_log(const char *text, bool is_user)
+     memset(payload, 0, sizeof(*payload));
+     strncpy(payload->text, text, MSG_MAX_LEN - 1);
+     payload->is_user = is_user;
+-    lv_async_call(history_log_async_cb, payload);
++    lvgl_ui_post(history_log_async_cb, payload);
+     return 0;
+ }
+diff --git a/src/ui/lvgl_ui_channel.h b/src/ui/lvgl_ui_channel.h
+index 849094d..4aca19a 100644
+--- a/src/ui/lvgl_ui_channel.h
++++ b/src/ui/lvgl_ui_channel.h
+@@ -19,6 +19,8 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ 
++#include "pet_display.h"
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -66,6 +68,22 @@ void lvgl_ui_enter_pet_stage(void);
+  */
+ int lvgl_ui_channel_send(const char* text);
+ 
++/**
++ * 发送 Agent 气泡但不触发 TTS。供 render 线程内的主动关怀使用，
++ * 避免在 LVGL render loop 中同步等待语音播放。
++ */
++int lvgl_ui_channel_send_silent(const char* text, pet_emotion_t emotion);
++
++/**
++ * 线程安全地向 LVGL 投递一次异步回调。
++ * LVGL 以 LV_OS_NONE 构建（无内部锁），任何非 render 线程直接调
++ * lv_async_call / lv_timer_* 都会与 lv_timer_handler 竞态并损坏定时器
++ * 链表（Round 27：ask 回复后 render 线程睡死）。此函数只做加锁入队，
++ * 由 render 线程每圈统一落地。回调在 LVGL 线程执行，语义与
++ * lv_async_call 相同。
++ */
++int lvgl_ui_post(lv_async_cb_t cb, void* data);
++
+ /**
+  * 发送用户消息到 UI（ASR 识别结果）。
+  * 在头顶气泡显示用户气泡并记录到历史。由语音通道（阶段 B）调用。
+diff --git a/src/ui/pet_care.c b/src/ui/pet_care.c
+new file mode 100644
+index 0000000..64a0792
+--- /dev/null
++++ b/src/ui/pet_care.c
+@@ -0,0 +1,432 @@
++/****************************************************************************
++ * pet_care.c - Proactive companion scheduler implementation.
++ *
++ * 所有主动开口都汇到 care_fire()：L1 模板气泡（lvgl_ui_channel_send，
++ * 复用情绪推断与气泡渲染）+ 历史环（lvgl_ui_channel_log，无气泡通道）。
++ * L2 增强走 message_bus 的 "care" 通道进 agent loop —— 云端 LLM → 本地
++ * 模型兜底的整条链路都是现成的，回复从 outbound "care" 分支渲染成
++ * 第二条气泡。L1 已经保底，L2 失败完全静默。
++ *
++ * 为什么不用独立线程：SRAM 余量紧张（docs_ble/24），且 agent_loop、
++ * render 线程都在 —— tick 挂 render 线程、墙钟秒门控，零额外成本。
++ *
++ * Team 181 - Contest 2026
++ ****************************************************************************/
++
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <syslog.h>
++#include <time.h>
++
++#include "pet_care.h"
++#include "lvgl_ui_channel.h"
++#include "pet_display.h"
++#include "core/message_bus.h"
++#include "health/hr_monitor.h"
++
++#define TAG "pet_care"
++
++/* 1Hz 逻辑用『墙钟秒』门控，而不是数 tick：render 每圈实际耗时
++ * 取决于 lv_timer_handler（实测约 25ms，不是标称的 5ms），数 tick 会
++ * 让『1 秒逻辑』退化成 5 秒一次。改用 care_now_s() 的秒变化做门，
++ * 与循环速率解耦。 */
++
++/* "care" 通道名（outbound dispatch 需识别同名字符串） */
++#define CARE_CHANNEL     "care"
++#define CARE_CHAT_ID     "pet_care"
++
++/* 现在时刻（秒，MONOTONIC —— 不受对时影响，空闲/闹钟计时都用它） */
++static time_t care_now_s(void)
++{
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return ts.tv_sec;
++}
++
++/* 本地时刻的「时」。板上策略是 RTC 直接存本地时间（LOG Round 20/21），
++ * 所以 gmtime 即本地时。拿不到就当正午（不静默也不深夜）。 */
++static int care_local_hour(void)
++{
++    time_t now = time(NULL);
++    struct tm tm_buf;
++    if (gmtime_r(&now, &tm_buf) != NULL) {
++        return tm_buf.tm_hour;
++    }
++    return 12;
++}
++
++/* 静默期：22:00（含）～ 次日 07:00（不含） */
++static bool care_is_quiet(void)
++{
++    int h = care_local_hour();
++    return h >= PET_CARE_QUIET_START_DEFAULT || h < PET_CARE_QUIET_END_DEFAULT;
++}
++
++/****************************************************************************
++ * Private Types
++ ****************************************************************************/
++
++/* 闹钟状态机阶段 */
++enum alarm_stage_e {
++    ALARM_OFF = 0,     /* 无闹钟 */
++    ALARM_SET,         /* 已设定，等 T-60s */
++    ALARM_PRE,         /* 已播预告，等 T0 */
++    ALARM_FIRE,        /* 已播晨间简报，等确认或升级 */
++    ALARM_ESC,         /* 已升级催促，等确认 */
++};
++
++struct care_action_s {
++    const char *text;
++    pet_emotion_t emotion;
++    bool start_l2;
++};
++
++/****************************************************************************
++ * Private Data
++ ****************************************************************************/
++
++/* L1 模板库：时段（早/中/晚）× 3 条。文案留在 ui_font_cjk_18 子集内
++ * （与 KEY2 演示问句同一约束）。 */
++static const char *g_idle_templates[][3] = {
++    { "早上好呀～喝杯水再忙哦",
++      "新的一天，我在这儿陪你",
++      "记得吃早餐，不然我会担心的" },
++    { "中午啦，别一直盯着屏幕呀",
++      "休息一下眼睛吧，眨眨～",
++      "要不要和我说说话？" },
++    { "晚上好～今天过得怎么样？",
++      "累了一天，放松一下吧",
++      "我在呢，想聊点什么吗？" },
++};
++
++static const char *g_alarm_pre_templates[] = {
++    "还有一分钟就到时间啦，准备好哦～"
++};
++
++static const char *g_alarm_fire_templates[] = {
++    "时间到啦！早上好～天气信息暂不可用，出门记得看天气哦",
++    "起床啦～天气信息暂不可用，先看看今天的安排吧",
++    "叮～到点了！天气信息暂不可用，出门前记得确认天气"
++};
++
++static const char *g_alarm_esc_templates[] = {
++    "嘿，还没动呢？我可要挠你痒痒了！",
++    "再不起就要迟到咯，快起来嘛～"
++};
++
++static const char *g_hr_alert_templates[] = {
++    "刚刚测到心跳有点快，先坐下歇会儿吧",
++    "心跳有点快哦，深呼吸放松一下～"
++};
++
++static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
++static unsigned int s_rand_state = 1; /* 模块私有 PRNG，避免并发 rand() */
++static time_t s_last_activity_s;      /* 最近一次触摸/按键 */
++static time_t s_last_care_s;          /* 最近一次主动开口（含告警） */
++static time_t s_last_1hz_s;           /* 上次跑 1Hz 逻辑的墙钟秒 */
++static bool   s_inited;
++static int    s_alarm_minutes;        /* 设定的分钟数 */
++static time_t s_alarm_at;             /* 闹钟到点时刻（MONOTONIC 秒） */
++static enum alarm_stage_e s_alarm_stage;
++static time_t s_alarm_fire_s;         /* T0 播报时刻（升级判定基准） */
++static time_t s_last_hr_alert_s;     /* 心率告警冷却基准 */
++
++/****************************************************************************
++ * Private Functions
++ ****************************************************************************/
++
++/* 时段索引：早（5-11）中（11-18）晚（其他） */
++static int care_daypart(void)
++{
++    int h = care_local_hour();
++    if (h >= 5 && h < 11) {
++        return 0;
++    }
++    if (h >= 11 && h < 18) {
++        return 1;
++    }
++    return 2;
++}
++
++/* Caller holds s_lock. */
++static const char *care_pick(const char *const *arr, int n)
++{
++    return arr[rand_r(&s_rand_state) % (unsigned)n];
++}
++
++/* L1 主动开口：气泡（情绪随文案自动推断）+ 历史环记录。
++ * quiet=true 时只进历史不上屏（不打扰睡眠，演示日志仍可复盘）。 */
++static void care_fire(const char *text, pet_emotion_t emotion, bool quiet)
++{
++    if (text == NULL) {
++        return;
++    }
++
++    /* 验收/现场排障都靠串口日志：触发动作必须留痕（气泡本身不打印）。 */
++    syslog(LOG_INFO, "[%s] fire emo=%d quiet=%d text=%s\n",
++           TAG, (int)emotion, (int)quiet, text);
++
++    if (!quiet) {
++        /* render 线程内只排气泡，不做同步 TTS；bubble 回调本身会记历史。 */
++        lvgl_ui_channel_send_silent(text, emotion);
++    } else {
++        lvgl_ui_channel_log(text, false);
++    }
++}
++
++/* L2 增强：把关怀上下文推给 agent loop（云端→本地兜底整条链路）。
++ * 失败静默——L1 气泡已经出去了。 */
++static void care_start_l2(const char *l1_text)
++{
++    agent_msg_t msg = { 0 };
++    char prompt[160];
++
++    snprintf(prompt, sizeof(prompt),
++             "主动关怀：你刚对用户说了「%s」，请自然地接着这句关心一下用户的近况。",
++             l1_text);
++
++    strncpy(msg.channel, CARE_CHANNEL, sizeof(msg.channel) - 1);
++    strncpy(msg.chat_id, CARE_CHAT_ID, sizeof(msg.chat_id) - 1);
++    msg.content = strdup(prompt);
++    if (msg.content == NULL) {
++        return;
++    }
++
++    /* render 线程绝不等待队列空间：L1 已保底，队列忙就静默跳过 L2。 */
++    if (message_bus_try_push_inbound(&msg) != 0) {
++        syslog(LOG_WARNING, "[%s] inbound queue rejected care prompt\n", TAG);
++        free(msg.content);
++    }
++}
++
++/* 场景②：空闲关怀。Caller holds s_lock；这里只选模板和更新标量，
++ * UI/总线动作由 tick 解锁后执行。 */
++static void care_idle_decide(struct care_action_s *action)
++{
++    time_t now = care_now_s();
++    time_t idle_ref = s_last_activity_s > s_last_care_s ? s_last_activity_s
++                                                       : s_last_care_s;
++    int part;
++
++    if (s_alarm_stage != ALARM_OFF) {
++        return;
++    }
++    if (now - idle_ref < (time_t)PET_CARE_IDLE_MIN_DEFAULT * 60) {
++        return;
++    }
++    if (s_last_care_s != 0 &&
++        now - s_last_care_s < (time_t)PET_CARE_COOLDOWN_MIN_DEFAULT * 60) {
++        return;
++    }
++    if (care_is_quiet()) {
++        return;
++    }
++
++    part = care_daypart();
++    action->text = care_pick(g_idle_templates[part], 3);
++    action->emotion = PET_EMOTION_CONFUSED;
++    action->start_l2 = true;
++    s_last_care_s = now;
++}
++
++/* 场景①：闹钟状态机。Caller holds s_lock；外部动作延迟到解锁后。 */
++static void care_alarm_decide(struct care_action_s *action)
++{
++    time_t now = care_now_s();
++
++    switch (s_alarm_stage) {
++    case ALARM_SET:
++        if (now + 60 >= s_alarm_at) {
++            action->text = care_pick(g_alarm_pre_templates, 1);
++            action->emotion = PET_EMOTION_SPEAKING;
++            s_last_care_s = now;
++            s_alarm_stage = ALARM_PRE;
++        }
++        break;
++
++    case ALARM_PRE:
++        if (now >= s_alarm_at) {
++            action->text = care_pick(g_alarm_fire_templates, 3);
++            action->emotion = PET_EMOTION_HAPPY;
++            s_last_care_s = now;
++            s_alarm_fire_s = now;
++            s_alarm_stage = ALARM_FIRE;
++        }
++        break;
++
++    case ALARM_FIRE:
++    case ALARM_ESC:
++        if (s_alarm_stage == ALARM_FIRE &&
++            now - s_alarm_fire_s >= PET_CARE_ALARM_ESC_SEC &&
++            s_last_activity_s < s_alarm_fire_s) {
++            action->text = care_pick(g_alarm_esc_templates, 2);
++            action->emotion = PET_EMOTION_CONFUSED;
++            s_last_care_s = now;
++            s_alarm_stage = ALARM_ESC;
++        }
++        break;
++
++    default:
++        break;
++    }
++}
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++int pet_care_init(void)
++{
++    pthread_mutex_lock(&s_lock);
++    if (s_inited) {
++        pthread_mutex_unlock(&s_lock);
++        return 0;
++    }
++
++    s_last_activity_s = care_now_s();   /* 开机视为一次活动，从满 idle 窗起算 */
++    s_last_care_s = 0;
++    s_last_1hz_s = 0;
++    s_alarm_stage = ALARM_OFF;
++    s_alarm_minutes = 0;
++    s_last_hr_alert_s = 0;
++    s_rand_state = (unsigned int)time(NULL) ^ (unsigned int)s_last_activity_s;
++
++    s_inited = true;
++    pthread_mutex_unlock(&s_lock);
++
++    syslog(LOG_INFO, "[%s] init ok (idle=%dmin cooldown=%dmin quiet=%d-%d)\n",
++           TAG, PET_CARE_IDLE_MIN_DEFAULT, PET_CARE_COOLDOWN_MIN_DEFAULT,
++           PET_CARE_QUIET_START_DEFAULT, PET_CARE_QUIET_END_DEFAULT);
++    return 0;
++}
++
++void pet_care_tick(void)
++{
++    struct care_action_s action = { 0 };
++    bool run_1hz = false;
++
++    pthread_mutex_lock(&s_lock);
++    /* 墙钟秒门控：render 每圈实际耗时随 LVGL 负载变化（实测 ~25ms），
++     * 数 tick 会让 1Hz 逻辑退化成几秒一次。 */
++    if (s_inited && care_now_s() != s_last_1hz_s) {
++        s_last_1hz_s = care_now_s();
++        run_1hz = true;
++        care_alarm_decide(&action);
++        if (action.text == NULL) {
++            care_idle_decide(&action);
++        }
++    }
++    pthread_mutex_unlock(&s_lock);
++
++    if (action.text != NULL) {
++        care_fire(action.text, action.emotion, false);
++        if (action.start_l2) {
++            care_start_l2(action.text);
++        }
++    }
++
++    /* hr_monitor 有自己的锁；放在 s_lock 外，防止阈值回调反向获取
++     * s_lock 时形成锁顺序反转。 */
++    if (run_1hz) {
++        hr_monitor_tick();
++    }
++}
++
++void pet_care_note_activity(void)
++{
++    bool alarm_acked = false;
++    char buf[32] = { 0 };
++
++    pet_care_init();
++    pthread_mutex_lock(&s_lock);
++    s_last_activity_s = care_now_s();
++
++    /* Stage1 预告以后，任何操作都视为用户已看到并确认叫醒。 */
++    if (s_alarm_stage == ALARM_PRE ||
++        s_alarm_stage == ALARM_FIRE ||
++        s_alarm_stage == ALARM_ESC) {
++        time_t now = time(NULL);
++        struct tm tm_buf;
++        if (gmtime_r(&now, &tm_buf) != NULL) {
++            snprintf(buf, sizeof(buf), "[唤醒确认] %02d:%02d",
++                     tm_buf.tm_hour, tm_buf.tm_min);
++        }
++        s_alarm_stage = ALARM_OFF;
++        s_alarm_minutes = 0;
++        alarm_acked = true;
++    }
++    pthread_mutex_unlock(&s_lock);
++
++    /* 不在状态锁内排 LVGL 消息，避免 UI 分配/队列操作扩大临界区。 */
++    if (alarm_acked) {
++        if (buf[0] != '\0') {
++            lvgl_ui_channel_log(buf, true);
++        }
++        syslog(LOG_INFO, "[%s] alarm acked by activity\n", TAG);
++    }
++}
++
++int pet_care_alarm_set(int minutes)
++{
++    if (minutes <= 0 || minutes > 24 * 60) {
++        return -1;
++    }
++
++    pet_care_init();
++    pthread_mutex_lock(&s_lock);
++    s_alarm_minutes = minutes;
++    s_alarm_at = care_now_s() + (time_t)minutes * 60;
++    s_alarm_stage = ALARM_SET;
++    pthread_mutex_unlock(&s_lock);
++
++    syslog(LOG_INFO, "[%s] alarm set %dmin\n", TAG, minutes);
++    return 0;
++}
++
++void pet_care_alarm_cancel(void)
++{
++    int old_stage;
++    int old_minutes;
++
++    pet_care_init();
++    pthread_mutex_lock(&s_lock);
++    old_stage = (int)s_alarm_stage;
++    old_minutes = s_alarm_minutes;
++    s_alarm_stage = ALARM_OFF;
++    s_alarm_minutes = 0;
++    pthread_mutex_unlock(&s_lock);
++
++    if (old_stage != ALARM_OFF) {
++        syslog(LOG_INFO, "[%s] alarm cancelled (was stage %d, %dmin)\n",
++               TAG, old_stage, old_minutes);
++    }
++}
++
++void pet_care_hr_report(int bpm)
++{
++    time_t now = care_now_s();
++    const char *text = NULL;
++
++    pet_care_init();
++    pthread_mutex_lock(&s_lock);
++    /* 首次告警不应用冷却；之后 PET_CARE_HR_ALERT_COOLDOWN_S 秒内的
++     * 持续高值只提醒一次。60s 窗口对演示友好（连续注入两次事件
++     * 都能看到），也足够防单事件内的连环轰炸。 */
++    if (s_last_hr_alert_s == 0 ||
++        now - s_last_hr_alert_s >= (time_t)PET_CARE_HR_ALERT_COOLDOWN_S) {
++        s_last_hr_alert_s = now;
++        s_last_care_s = now;
++        text = care_pick(g_hr_alert_templates, 2);
++    }
++    pthread_mutex_unlock(&s_lock);
++
++    if (text != NULL) {
++        char buf[48];
++        care_fire(text, PET_EMOTION_CONFUSED, false);
++        snprintf(buf, sizeof(buf), "[心率告警] %d bpm", bpm);
++        lvgl_ui_channel_log(buf, true);
++        syslog(LOG_INFO, "[%s] hr alert %d bpm\n", TAG, bpm);
++    }
++}
+diff --git a/src/ui/pet_care.h b/src/ui/pet_care.h
+new file mode 100644
+index 0000000..b182b61
+--- /dev/null
++++ b/src/ui/pet_care.h
+@@ -0,0 +1,96 @@
++/****************************************************************************
++ * pet_care.h - Proactive companion scheduler (contest "proactive x3").
++ *
++ * 场景②（空闲关怀，本模块）：LVGL render 线程每 5ms 喂一次 tick，
++ *   内部 1Hz 分频；静默期外、无操作超过 idle 分钟数 → 桌宠主动开口
++ *   （L1 模板气泡保底）。
++ * L2 增强：把「主动关怀」上下文作为一条 inbound 消息推给 agent loop
++ *   （channel="care"），复用云端 LLM → 本地模型兜底的整条既有链路，
++ *   回复从 outbound "care" 分支渲染成第二条气泡。L1 已保底，L2 失败
++ *   静默。
++ * 场景①（闹钟叫醒）与场景③（心率告警）复用本模块的对外接口
++ *   （alarm_set / hr_report），见 ai_lm.cxx 与 health/hr_monitor.c。
++ *
++ * 设计约束（docs/superpowers/plans/2026-09-06 Task 1.1）：
++ *   - 不新增常驻线程：tick 由既有 render 线程驱动（1Hz 分频零成本）；
++ *     agent_loop / LLM 调用全部在既有线程里跑。
++ *   - 触摸/按键活动是空闲判定的唯一复位源。
++ *
++ * Team 181 - Contest 2026
++ ****************************************************************************/
++
++#ifndef AI_AGENT_PET_CARE_H
++#define AI_AGENT_PET_CARE_H
++
++#include <nuttx/config.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* 常量（编译期兜底；做成 Kconfig int 项属于后续调优，不阻塞交付） */
++#ifdef CONFIG_AI_AGENT_CARE_IDLE_MIN
++#  define PET_CARE_IDLE_MIN_DEFAULT CONFIG_AI_AGENT_CARE_IDLE_MIN
++#else
++#  define PET_CARE_IDLE_MIN_DEFAULT 5
++#endif
++#ifdef CONFIG_AI_AGENT_CARE_COOLDOWN_MIN
++#  define PET_CARE_COOLDOWN_MIN_DEFAULT CONFIG_AI_AGENT_CARE_COOLDOWN_MIN
++#else
++#  define PET_CARE_COOLDOWN_MIN_DEFAULT 10
++#endif
++#ifdef CONFIG_AI_AGENT_CARE_QUIET_START
++#  define PET_CARE_QUIET_START_DEFAULT CONFIG_AI_AGENT_CARE_QUIET_START
++#else
++#  define PET_CARE_QUIET_START_DEFAULT 22
++#endif
++#ifdef CONFIG_AI_AGENT_CARE_QUIET_END
++#  define PET_CARE_QUIET_END_DEFAULT CONFIG_AI_AGENT_CARE_QUIET_END
++#else
++#  define PET_CARE_QUIET_END_DEFAULT 7
++#endif
++#define PET_CARE_ALARM_ESC_SEC       120   /* 闹钟到点后无响应的升级窗口 */
++/* 心率告警冷却独立于关怀冷却：演示中连续注入两次事件很常见，
++ * 10 分钟窗口会把第二次演示全部吞掉。60 秒足以防连环轰炸。 */
++#ifdef CONFIG_AI_AGENT_HR_ALERT_COOLDOWN_S
++#  define PET_CARE_HR_ALERT_COOLDOWN_S CONFIG_AI_AGENT_HR_ALERT_COOLDOWN_S
++#else
++#  define PET_CARE_HR_ALERT_COOLDOWN_S 60
++#endif
++
++/* 情绪场景，决定模板库取哪一组 */
++typedef enum
++{
++  PET_CARE_SCENE_IDLE = 0,    /* 空闲关怀（场景②） */
++  PET_CARE_SCENE_ALARM_PRE,  /* 闹钟前 1 分钟预告 */
++  PET_CARE_SCENE_ALARM_FIRE, /* 闹钟到点晨间简报 */
++  PET_CARE_SCENE_ALARM_ESC,  /* 闹钟到点后无响应升级 */
++  PET_CARE_SCENE_HR_ALERT,  /* 心率阈值告警（场景③） */
++  PET_CARE_SCENE_COUNT
++} pet_care_scene_t;
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++/* daemon 启动时调用一次（幂等） */
++int  pet_care_init(void);
++
++/* LVGL render 线程 5ms 周期调用；内部 200 次 tick 分频为 1Hz 逻辑 */
++void pet_care_tick(void);
++
++/* 触摸/按键活动复位：空闲计时清零；闹钟 pending 时视为唤醒确认 */
++void pet_care_note_activity(void);
++
++/* 场景①闹钟（Task 1.2 由 ai_lm.cxx 的 set_timer 分支调用） */
++int  pet_care_alarm_set(int minutes);
++void pet_care_alarm_cancel(void);
++
++/* 场景③心率（Task 1.3 由 health/hr_monitor.c 超阈值时调用） */
++void pet_care_hr_report(int bpm);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* AI_AGENT_PET_CARE_H */
+diff --git a/src/ui/pet_display.c b/src/ui/pet_display.c
+index d97b154..87403ab 100644
+--- a/src/ui/pet_display.c
++++ b/src/ui/pet_display.c
+@@ -16,6 +16,7 @@
+ #include <syslog.h>
+ 
+ #include "pet_display.h"
++#include "lvgl_ui_channel.h"   /* lvgl_ui_post: thread-safe async (Round 27) */
+ 
+ /* Custom CJK subset font (generated by tools/gen_cjk_font.sh) */
+ extern const lv_font_t ui_font_cjk_18;
+@@ -292,7 +293,9 @@ void pet_display_set_emotion(pet_emotion_t emotion)
+         return;
+     }
+     msg->emotion = emotion;
+-    lv_async_call(emotion_async_cb, msg);
++    /* Called from agent/NSH/key threads too: must go through the post
++     * queue, never lv_async_call() directly (Round 27 timer-list race). */
++    lvgl_ui_post(emotion_async_cb, msg);
+ }
+ 
+ pet_emotion_t pet_display_get_emotion(void)
+diff --git a/src/ui/pet_page.c b/src/ui/pet_page.c
+index c46f5af..832089d 100644
+--- a/src/ui/pet_page.c
++++ b/src/ui/pet_page.c
+@@ -31,6 +31,7 @@
+ #include <time.h>
+ #include "pet_page.h"
+ #include "lvgl_ui_channel.h"
++#include "pet_care.h"
+ 
+ /****************************************************************************
+  * Private Data
+@@ -314,6 +315,9 @@ static void on_cloud_clicked(lv_event_t *e)
+     (void)e;
+     printf("[PetPage] Cloud tapped\n");
+ 
++    /* 触摸活动：复位空闲关怀计时（闹钟 pending 时视为唤醒确认） */
++    pet_care_note_activity();
++
+     /* Playful reply in the AI text layer, restore greeting after 3s */
+     if (ai_text_label != NULL)
+     {
+@@ -341,6 +345,7 @@ static void on_back_clicked(lv_event_t *e)
+ {
+     (void)e;
+     printf("[PetPage] Back button clicked\n");
++    pet_care_note_activity();
+     if (back_callback != NULL)
+     {
+         back_callback();
