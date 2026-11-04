@@ -108,9 +108,10 @@ mkdir("/data/agent/skills", 0755);      // ← 技能目录
 |---|---|---|
 | **SF32LB52 蓝牙 PAN 调试** | `docs/dev_skill_bt_pan.md` | 从十几天真机调试提炼：4 条平台硬规则 +「症状 → 先查什么」对照表 + 工具入口，把"看起来哪里都可能有问题"压成几条先验规则 |
 | **NuttX 构建/链接产物取证** | `skills/nuttx-build-forensics/` | 固件行为与源码不符时，用符号表 / 实际编译选项 / 构建依赖去验证产物，而不是继续读源码（弱符号遮蔽、`-O0`、config 没生效、崩溃符号化） |
-| **小云手表功能开发纪律** | 工作区 `.claude/skills/vela-contest-feature/` | 5 条硬规则：先取证再改代码、「编译通过」≠「功能生效」、一次只改一层、烧录必须验证真的写进去、用户说"没效果"时先怀疑自己的假设；附本板硬件坑清单 |
+| **小云手表功能开发纪律** | `skills/vela-contest-feature/` | 5 条硬规则：先取证再改代码、「编译通过」≠「功能生效」、一次只改一层、烧录必须验证真的写进去、用户说"没效果"时先怀疑自己的假设；附 19 类踩坑清单（P1–P19，含"函数存在但不做事"、`/data` 写导致 IWDT 复位）与本板引脚/硬件坑 |
+| **存储写路径稳定性** | `skills/storage-write-stability/` | 周期性复位/黑屏而日志只有 `[RSET] WDT` 时，用**只读隔离法**（关掉写路径跑同样负载）把存储从嫌疑里摘出来，再按"失败代价从低到高"逐步恢复持久化 |
 
-这三个 Skill 的共同点：**每一条都是从真实踩坑里长出来的**，不是通用模板。
+这四个 Skill 的共同点：**每一条都是从真实踩坑里长出来的**，不是通用模板。
 例如 PAN 调试里的「一条 H4 帧必须一次写进邮箱 ring」，是排查了数天、换过无数无关配置之后才定位的。
 
 ---
@@ -119,7 +120,7 @@ mkdir("/data/agent/skills", 0755);      // ← 技能目录
 
 | 赛题要求 | 满足方式 | 证据 |
 |---|---|---|
-| 自定义 Skill ≥ 1 个（硬性） | 运行时 11 个（含 care-reminder）+ 开发沉淀 3 个 | `src/tools/skill_loader.c`、`app/ai_agent/skills/`、`docs/dev_skill_bt_pan.md`、`skills/nuttx-build-forensics/` |
+| 自定义 Skill ≥ 1 个（硬性） | 运行时 11 个（含 care-reminder）+ 开发沉淀 4 个 | `src/tools/skill_loader.c`、`app/ai_agent/skills/`、`docs/dev_skill_bt_pan.md`、`skills/nuttx-build-forensics/`、`skills/vela-contest-feature/`、`skills/storage-write-stability/` |
 | 说明运行时 Skill 的定义与触发场景 | 见 1.4 | `app/ai_agent/skills/care-reminder.md` |
 | 运行时路径 `/data/agent/skills/` | `AGENT_SKILLS_DIR` 宏、启动建目录 | `include/agent_config.h`、`src/agent_main.c` |
 | Skill 真正参与决策 | 摘要注入系统提示 + 工具调用 | `src/core/context_builder.c`、`src/core/agent_loop.c` |
@@ -148,4 +149,4 @@ Claude Code / AIoT-IDE 会在匹配场景自动加载。
 | REST 接口 | `packages/ai_agent/src/infra/api_handler.c` |
 | 飞书同步 | `packages/ai_agent/src/channels/nsh_commands.c` |
 | care-reminder 定义 | `app/ai_agent/skills/care-reminder.md` |
-| 开发沉淀 | `docs/dev_skill_bt_pan.md`、`skills/nuttx-build-forensics/` |
+| 开发沉淀 | `docs/dev_skill_bt_pan.md`、`skills/nuttx-build-forensics/`、`skills/vela-contest-feature/`、`skills/storage-write-stability/` |
