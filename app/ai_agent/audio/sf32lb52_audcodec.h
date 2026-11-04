@@ -18,4 +18,14 @@
  */
 int sf32lb52_audcodec_register(void);
 
+/**
+ * 注册板载扬声器播放设备 (AUDPRC -> AUDCODEC DAC -> 板载 PA)。
+ *
+ * 设备名由 CONFIG_EXAMPLES_AUDIO_SETUP_TX_DEVNAME 决定, 默认 /dev/audio/pcm0p
+ * (与 ai_agent 的 AGENT_AUDIO_PLAYBACK_DEV 一致)。
+ *
+ * @return 0 成功, 负值失败
+ */
+int sf32lb52_audio_tx_register(void);
+
 #endif /* SF32LB52_AUDCODEC_H */

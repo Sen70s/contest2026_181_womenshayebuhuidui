@@ -35,6 +35,16 @@ CONFIG_ARCH_STDARG_H=y
 CONFIG_ARMV8M_SYSTICK=y
 CONFIG_BOARD_EARLY_INITIALIZE=y
 CONFIG_BOARD_LATE_INITIALIZE=y
+# AppBringUp thread (runs board_late_initialize) defaults to
+# DEFAULT_TASK_STACKSIZE = 16 KB.  On 2026-10-20 the board started crashing at
+# boot about 50% of the time with:
+#   Assertion failed at /include/nuttx/semaphore.h:566
+#   task: AppBringUp  process: Kernel   PC on the call to nx_start_application()
+# A fault exactly on the first instruction of the callee is the classic
+# invalid-stack-pointer signature.  board_late_initialize() does TF scan
+# (8 retries) + NOR init + littlefs mount + tmpfs fallback, which is deeper
+# than a typical board.  Raise to 32 KB and verify the hypothesis.
+CONFIG_BOARD_INITTHREAD_STACKSIZE=32768
 CONFIG_BOARD_LOOPSPERMSEC=8499
 CONFIG_BSP_ENABLE_MPI1=y
 CONFIG_BSP_ENABLE_MPI2=y
@@ -75,6 +85,8 @@ CONFIG_DEBUG_ASSERTIONS=y
 CONFIG_DEBUG_FEATURES=y
 CONFIG_DEBUG_SCHED=y
 CONFIG_DEBUG_SYMBOLS=y
+# CONFIG_DEBUG_NOOPT is not set
+CONFIG_DEBUG_FULLOPT=y
 CONFIG_DEFAULT_TASK_STACKSIZE=16096
 CONFIG_DEV_GPIO=y
 CONFIG_DEV_URANDOM=y
@@ -105,7 +117,18 @@ CONFIG_EXAMPLES_BUTTONS_QTD=1
 # CONFIG_EXAMPLES_TIMER is not set
 CONFIG_EXAMPLES_WATCHDOG=y
 CONFIG_FRAME_POINTER=y
+# TF card music support.
+#
+# There are TWO FAT implementations in this tree and they are NOT equivalent:
+#   nuttx/fs/fat   ("vfat")  - NuttX native FAT12/16/32. No exFAT at all.
+#   nuttx/fs/fatfs ("fatfs") - ChaN FatFs, ffconf.h has FF_FS_EXFAT=1.
+# fs_mount.c maps them to two different type names, so the mount type decides
+# which driver handles the volume. Modern cards are shipped exFAT formatted, so
+# "vfat" alone cannot mount them (EINVAL). Enable both and let the mount code
+# try vfat first, then fall back to fatfs.
+CONFIG_FAT_LFN=y
 CONFIG_FS_FAT=y
+CONFIG_FS_FATFS=y
 CONFIG_FS_LITTLEFS=y
 CONFIG_FS_LITTLEFS_PROGRAM_SIZE_FACTOR=1
 CONFIG_FS_LOCK_BUCKET_SIZE=4
@@ -119,8 +142,21 @@ CONFIG_GRAPHICS_LVGL=y
 # 'depends on I2C' -- leaving the board with no touch driver at all.
 CONFIG_I2C=y
 CONFIG_I2C_BITBANG=y
+# Bus reset for the MAX30102 recovery path (ai_agent hr_sensor): the SF32 HAL
+# issues a hardware bus reset (CR.RSTREQ) and resets the controller.  It is
+# only selectable once the chip declares ARCH_HAVE_I2CRESET (chips/sf32lb52/
+# Kconfig, ARCH_CHIP_SF32LB52); without that line kconfig drops this symbol
+# with 'unmet direct dependencies' and I2CIOC_RESET stays -ENOTTY.
+#
+# 2026-10-19: this line did not exist before.  The comment above was complete
+# but the option itself was never set, so CONFIG_I2C_RESET stayed 'n', the
+# case I2CIOC_RESET in i2c_driver.c fell through to default (-ENOTTY), and
+# hr_recover()'s hardware bus reset had never worked -- only the close/open
+# soft recovery did.  sifli_i2c.c registers ops->reset under CONFIG_I2C_RESET
+# and HAL_I2C_Reset() really pulses CR.RSTREQ, so enabling it is sufficient.
+CONFIG_I2C_RESET=y
 CONFIG_I2C_SLAVE=y
-CONFIG_IDLETHREAD_STACKSIZE=16096
+CONFIG_IDLETHREAD_STACKSIZE=8192
 CONFIG_INIT_ENTRYPOINT="nsh_main"
 CONFIG_INPUT=y
 CONFIG_INPUT_BUTTONS=y
@@ -164,6 +200,28 @@ CONFIG_LV_USE_NUTTX_TOUCHSCREEN=y
 #    pixel move to libc memcpy, and the only implementation built today is
 #    the byte/word-at-a-time C one in lib_bsdmemcpy.c compiled at -O0.
 # CONFIG_LV_NUTTX_LCD_SINGLE_BUFFER is not set
+# EXPERIMENT REVERTED (2026-10-16).  Two things were learned and both are
+# worth keeping in mind:
+#   1. The buffer really is NOT in SRAM.  lv_malloc() placed it at 0x6007ff60
+#      = PSRAM, because this board merges the SRAM and PSRAM heaps into one
+#      arena (CONFIG_MM_REGIONS=2, no CONFIG_MM_KERNEL_HEAP), so the "fits the
+#      ~65 KB of free SRAM heap" reasoning above no longer holds -- making the
+#      buffer static overflows the sram region by 29,632 B, i.e. only ~28 KB
+#      is actually free now.
+#   2. ...but that does NOT matter.  Pinning the buffer into SRAM (static
+#      array, 30 rows to fit) left the scroll cost unchanged:
+#          PSRAM 60 rows: render 74-115 ms, flush 23-34 ms, CPU 87-89%, 5-8 FPS
+#          SRAM  30 rows: render 70-105 ms, flush 31-44 ms, CPU 88-90%, 4-7 FPS
+#      Render is identical and flush got WORSE (30 rows = twice as many bands).
+#      So the scroll cost is raw CPU pixel work in LVGL's software renderer,
+#      not memory bandwidth.  Reverted to 60 rows.
+#
+# NOTE: CONFIG_LV_NUTTX_LCD_CUSTOM_BUFFER=y is what selects the partial-buffer
+# path.  It MUST stay -- with none of the three choice symbols set, Kconfig
+# falls back to the first one (SINGLE_BUFFER), which silently switches the
+# display to RENDER_MODE_FULL and makes every tiny invalidation repaint the
+# whole 390x450 area.  (Lost it once during an edit on 2026-10-16 and the
+# config came back as BUFFER_COUNT=1.)
 CONFIG_LV_NUTTX_LCD_CUSTOM_BUFFER=y
 CONFIG_LV_NUTTX_LCD_BUFFER_SIZE=60
 # -O2 for the lvgl target only, applied by
@@ -184,10 +242,43 @@ CONFIG_LV_NUTTX_LCD_BUFFER_SIZE=60
 CONFIG_LV_OPTLEVEL="-O2"
 CONFIG_ARMV8M_MEMCPY=y
 
+# Refresh / input / animation period, in ms.  Kconfig help: "Default display
+# refresh, input device read and animation step period."  One knob, three
+# effects -- and it is the cause of the "sluggish scrolling" complaint.
+#
+# Why 33 is too slow (the old default):
+#   - display refresh  -> animations capped at 30 FPS
+#   - INPUT DEVICE READ -> lv_indev.c:128 creates the touch read timer with
+#     this same period, so the panel was sampled at only 30 Hz.  A drag only
+#     produced a new coordinate every 33 ms, which is what makes scrolling
+#     feel steppy and imprecise.
+#   - animation step   -> 30 steps/s
+#
+# Why 16 is affordable: measured on hardware 2026-10-16 with LVGL's own
+# sysmon, a redraw costs render 6-8 ms + flush 2-3 ms (~10 ms), with CPU at
+# 0-5% (peak 53%) while idle.  A 16 ms frame budget (62 FPS) therefore has
+# headroom, and LVGL only repaints when something is actually invalidated --
+# so a shorter period costs nothing while the UI is idle; it only buys
+# smoothness while animating or scrolling.
+#
+# The touch panel can feed it: FT6146 is interrupt driven here
+# (CONFIG_INPUT_FT6146_POLL_MS=0), reporting as soon as the controller has a
+# sample, at a native rate well above 30 Hz.  We were the bottleneck, not it.
+CONFIG_LV_DEF_REFR_PERIOD=16
+
 # Frame timing, off by default.  Re-enable these three to get one
 # "sysmon: N FPS ... refr Xms (render Yms | flush Zms), CPU N%" line per
 # second on the console; LV_LOG() there is unconditional, so it is not
 # something to ship.  Round 22 used it to measure the render path.
+#
+# Used 2026-10-16 to measure the render path before/after the UI work:
+#   before the LV_DEF_REFR_PERIOD change: refr_rate 25, render 6-8ms, flush 2-3ms
+#   after  (33 -> 16 ms):                 refr_rate 50, render 6-9ms, flush 2-3ms
+# Turned off again after that, then briefly back ON (2026-10-16 04:3x) to
+# measure the cost of SCROLLING the chat history -- the user reports it looks
+# like a "water wave" rather than smooth.  Need render/flush split under a
+# real drag to tell "render too slow" apart from "too many 60-row bands".
+# MUST BE TURNED BACK OFF before shipping.
 # CONFIG_LV_USE_SYSMON is not set
 # CONFIG_LV_USE_PERF_MONITOR is not set
 # CONFIG_LV_USE_PERF_MONITOR_LOG_MODE is not set
@@ -223,12 +314,54 @@ CONFIG_ARMV8M_MEMCPY=y
 # CONFIG_LV_USE_TABLE is not set
 # CONFIG_LV_USE_TABVIEW is not set
 # CONFIG_LV_USE_TEXTAREA is not set
-# CONFIG_LV_USE_TILEVIEW is not set
+# Tileview: the pet page becomes two swipeable screens -- screen 1 the mascot,
+# screen 2 heart-rate / SpO2 -- matching how mainstream watches page.
+# Costs ~190 lines of LVGL source.  Keep this file ASCII-only: a non-ASCII
+# comment here breaks the CMake configure step.
+CONFIG_LV_USE_TILEVIEW=y
 # CONFIG_LV_USE_WIN is not set
 CONFIG_MMCSD=y
+# SPI clock for the TF card.  Kconfig default is 20 MHz, but on hardware
+# (2026-10-18) a 20 MHz card produced intermittent -EIO: the very first
+# hexdump of /dev/mmcsd0 did return the MBR boot sector
+#   fa 31 c0 8e d8 ... (x86 boot stub)
+# but then failed with "read failed: 5" part-way through, and every later
+# open returned -EIO, so parse_block_partition() never found a partition.
+# 20 MHz is marginal for SD-over-SPI with a socketed card; drop to 10 MHz.
+# TF card SPI clock.
+#
+# Tried 4 MHz to see whether the intermittent EIO was a timing-margin problem.
+# It was WORSE: at 4 MHz the MBR read failed outright (partition scan ret=-5,
+# found=0, attempts=9), while at 10 MHz the scan succeeds on the first try.
+# So the card path is not short on timing margin -- the flakiness is elsewhere
+# (slot contact / card power). Keep the original 10 MHz.
+CONFIG_MMCSD_SPICLOCK=10000000
+# Partition table parsing.  Without this the SD/TF card is only exposed as the
+# whole-disk device /dev/mmcsd0 and no /dev/mmcsd0pN nodes are created, so a
+# card that carries an MBR partition table cannot be mounted -- the FAT
+# filesystem lives inside partition 1, and fat_mount on the whole disk fails.
+#
+# Found on hardware 2026-10-18: mmcsd_spislotinitialize() succeeded
+# (/dev/mmcsd0 was present) but no mmcsd0p0 appeared, and
+#   mount -t vfat /dev/mmcsd0 /data/tf   ->  errno 20 (ENOTDIR)
+# A hexdump of /dev/mmcsd0 showed a classic MBR boot stub
+#   fa 31 c0 8e d8 8e c0 8e d0 bc 00 7c ...
+# proving the card was detected and readable, just not partitioned by us.
+CONFIG_PTABLE_PARTITION=y
+CONFIG_MBR_PARTITION=y
 CONFIG_MM_REGIONS=2
 CONFIG_MTD=y
 CONFIG_MTD_BYTE_WRITE=y
+# Required only to satisfy a link dependency, not for the TF card itself:
+# nuttx/fs/partition/fs_partition.c calls register_partition_with_mtd() whenever
+# CONFIG_MTD is set (plain #ifdef CONFIG_MTD), but
+# nuttx/fs/driver/CMakeLists.txt only compiles fs_mtdpartition.c when
+# CONFIG_MTD_PARTITION is set.  With CONFIG_MTD=y and MTD_PARTITION unset the
+# link fails with:
+#   fs_partition.c:(.text.register_partition+0x80):
+#       undefined reference to 'register_partition_with_mtd'
+# Upstream condition mismatch; enabling this builds the missing file.
+CONFIG_MTD_PARTITION=y
 CONFIG_NSH_BUILTIN_APPS=y
 CONFIG_NSH_FILEIOSIZE=512
 CONFIG_NSH_LINELEN=256
@@ -339,6 +472,18 @@ CONFIG_BT_BUF_ACL_TX_COUNT=5
 # keep one frame in reassembly while another is dispatched.
 CONFIG_BT_BUF_ACL_RX_COUNT_EXTRA=2
 CONFIG_BT_ATT_TX_COUNT=5
+# BR/EDR link key persistence is NOT enabled: CONFIG_BT_SETTINGS does not
+# compile in this zblue port (host/gatt.c:1516 references
+# bt_dev_gatt_ctx.gatt_delayed_store which the port's headers lack), and the
+# vendor alternative (SETTINGS_ZBLUE) requires BLUETOOTH_STORAGE_PROPERTY_
+# SUPPORT -> KVDB, which conflicts with this project's UNQLITE storage.
+# Root fix therefore belongs in the vendor layer: persist the link key in the
+# existing UNQLITE bt_storage (save on adapter_on_link_key_update / conn
+# link_key_notify, restore into the host key pool at BT init).  See
+# docs_ble/30 SS14.  Operational workaround until then: after a board
+# power-cycle, re-pair (phone: forget Agent-Watch, then let the board
+# connect) - verified 2026-10-11: SAL auto-accepts SSP, bond is stored.
+
 # Legacy advertising commands (0x2006/0x2008/0x200A): SF32LB52 LCPU firmware
 # reports success on ext adv (0x2039) but transmits nothing. Aligned with the
 # official Gemini-S1 ai_agent defconfig (BT_EXT_ADV_LEGACY_SUPPORT=y).
@@ -359,14 +504,12 @@ CONFIG_BLUETOOTH_SERVER=y
 CONFIG_BLUETOOTH_STACK_BREDR_ZBLUE=y
 CONFIG_BLUETOOTH_BLE_SUPPORT=y
 CONFIG_BLUETOOTH_STACK_LE_ZBLUE=y
-# GATT server (NUS passthrough) — BLE data channel for the phone proxy.
 # Client features are off to keep .bss within the 512K SRAM region.
 CONFIG_BLUETOOTH_GATT=y
 CONFIG_BLUETOOTH_GATT_SERVER=y
 # CONFIG_BLUETOOTH_GATT_CLIENT is not set
 CONFIG_BLUETOOTH_GATTS_MAX_ATTRIBUTE_NUM=24
 CONFIG_BT_GATT_SERVER=y
-# BISECT(verify): restore GATT_CLIENT=y — closing it changed the .bss
 # layout and the pre-existing heap corruption now crashes the voice/LVGL
 # init path. Keep it enabled until the overflow source is found.
 CONFIG_BT_GATT_CLIENT=y
@@ -380,6 +523,21 @@ CONFIG_BLUETOOTH_TOOLS=y
 # Connection slots: BT_MAX_CONN=2 allows one slot for connectable-adv
 # and one for the phone ACL (PAN/BREDR). Gemini-S1 uses 5.
 CONFIG_BT_MAX_CONN=2
+# Bluetooth throughput (2026-10-12): one 1500 B PAN frame needs 4 ACL
+# fragments of 487 B, but the global in-flight window was min(fragments=2,
+# TX_MAX=5, br.pkts=4, in_ll<3) = 2 -> ~12 KB/s and zblue dropped frames
+# ("Unable to allocate buffer within timeout"), truncating TTS audio.
+# Raise the three host-side knobs (+~312 B RAM total; srpkt credits come
+# from the driver's synthesised Read_Buffer_Size, raised 4 -> 8 there).
+CONFIG_BT_CONN_FRAG_COUNT=8
+CONFIG_BT_BUF_ACL_TX_COUNT=10
+CONFIG_BT_CONN_TX_MAX=10
+# BT_BUF_ACL_TX_COUNT only feeds defaults in a host-only build, but
+# BT_L2CAP_TX_BUF_COUNT defaults to it and each acl_tx_pool buffer is
+# 1740 B, so raising it implicitly cost +8.7 KB SRAM (88.7% -> 90.4%).
+# Pin the L2CAP pool at its previous size: the PAN path uses its own
+# pan_tx_pool, and SRAM must stay free for the 31 KB minimp3 decoder.
+CONFIG_BT_L2CAP_TX_BUF_COUNT=8
 # SSP Just-Works auto-reply: enabled so that when both sides support
 # Just-Works (NoInputOutput), the pairing_confirm callback fires
 # instead of blocking on a passkey display that nobody sees.
@@ -390,21 +548,60 @@ CONFIG_BLUETOOTH_BLE_ADV=y
 # BREDR is not supported by the LCPU firmware, so SPP never activates.
 CONFIG_BLUETOOTH_SPP=y
 CONFIG_BT_RFCOMM=y
-# PAN (BNEP over BREDR) — 2026-08-15 BREDR 闸门0通过后启用:
-# 手机"蓝牙网络共享"(NAP) 配对后经 bt-pan 网卡代理上网
 CONFIG_BLUETOOTH_PAN=y
 # Nothing else turns the radio on: bluetoothd only builds the stack, and
 # ai_agent just waits for bt-pan to get an address. Without this the board
 # boots with Bluetooth off until someone types "bttool enable".
 CONFIG_BLUETOOTH_AUTO_ENABLE=y
 CONFIG_BLUETOOTH_AUTO_ENABLE_DELAY_MS=1000
-# 出厂状态（/data 为空）下 adapter 的 scan_mode 默认只有"可连接"，手机搜不到
-# 手表；手表又没有配对界面去手动打开。固定成 2（可连接+可被发现）。
 CONFIG_BLUETOOTH_BOOT_SCAN_MODE=2
 # CONFIG_BLUETOOTH_LOG is not set (log_server needs KVDB property, conflicts with unqlite storage)
 # zblue stack debug log (syslog): needed to trace Link_Key_Request handling
 CONFIG_BT_DEBUG_LOG=y
 CONFIG_BT_DEBUG_LOG_LEVEL=6
+
+# Onboard audio: MEMS mic capture + speaker playback through audcodec.
+# Capture device name pcm0c matches AGENT_AUDIO_CAPTURE_DEV; playback
+# device pcm0p matches AGENT_AUDIO_PLAYBACK_DEV.
+# Playback path (verified on hardware 2026-10-11): PCM -> DMA1_CH1 ->
+# AUDPRC -> AUDCODEC DAC -> analog DAC1 -> onboard PA (PA10).
+CONFIG_AUDIO=y
+CONFIG_AUDIO_NUM_BUFFERS=8
+CONFIG_AUDIO_BUFFER_NUMBYTES=4096
+CONFIG_EXAMPLES_AUDIO_SETUP=y
+CONFIG_EXAMPLES_AUDIO_SETUP_DEVNAME="pcm0c"
+CONFIG_EXAMPLES_AUDIO_SETUP_TX=y
+CONFIG_EXAMPLES_AUDIO_SETUP_TX_DEVNAME="pcm0p"
+CONFIG_EXAMPLES_AUDIO_REC_TEST=y
+CONFIG_EXAMPLES_AUDIO_PLAY_TEST=y
+CONFIG_EXAMPLES_AUDIO_PLAY=y
+# Voice "mouth": media_player_* implemented over /dev/audio/pcm0p in
+# packages/ai_agent/src/stubs.c (CONFIG_MEDIA is unavailable here).
+CONFIG_EXAMPLES_PCM_MEDIA_TEST=y
+# audio_beep: CPU-fed DAC tone (the one confirmed AUDIBLE on hardware) --
+# used as the reference when the AUDPRC/DMA path stays silent.
+CONFIG_EXAMPLES_AUDIO_BEEP=y
+CONFIG_EXAMPLES_VOICE_SPEAK=y
+# Watch speaks the answers sent to the phone app (TTS -> speaker)
+CONFIG_AI_AGENT_SPEAK_WS_REPLIES=y
+# Boot chime DISABLED: calling the playback API at Phase 1 (+85ms) hangs the
+# agent (audio stack not ready yet). Re-enable only from a later phase.
+# CONFIG_AI_AGENT_BOOT_CHIME is not set
+
+# MAX30102 heart-rate sensor (I2C0 0x57, shares touch bus PA30/PA33).
+# uORB is required so the algorithm can publish ORB_ID(algo_heartrate),
+# which is what ai_agent tool_health.c reads (gate: CONFIG_FITNESS_ALGO).
+CONFIG_USENSOR=y
+CONFIG_UORB=y
+CONFIG_FITNESS_ALGO=y
+CONFIG_EXAMPLES_SENSOR_MAX30102=y
+
+# Media framework (media_player) is NOT enabled: frameworks/multimedia/media
+# needs cutils/properties.h (openvela cutils + property service) which is not
+# part of this build - media_utils.c:25 fails to compile.  TTS PCM should be
+# written straight to /dev/audio/pcm0p instead (audio_play_test does exactly
+# that and is verified working).
+# CONFIG_MEDIA is not set
 
 # Official ai_agent framework (EXAMPLES_AI_AGENT_VELA)
 CONFIG_EXAMPLES_AI_AGENT_VELA=y
@@ -412,11 +609,26 @@ CONFIG_EXAMPLES_AI_AGENT_VELA_SHELL_FULL=y
 # CONFIG_AI_AGENT_FEISHU is not set
 # CONFIG_AI_AGENT_WEIXIN is not set
 # CONFIG_AI_AGENT_MQTT is not set
+#
+# Audio capture gain. Kconfig default is 6, but that compensates for boards
+# whose multi-channel DMIC downmix dilutes the signal when only one mic is
+# populated (see packages/ai_agent/Kconfig:215 help text).
+#
+# This board is a SINGLE analog MEMS mic wired straight to AUDCODEC ADC CH0
+# in mono (sf32lb52_audcodec.c: "MEMS MIC -> audcodec ADC CH0", 16k/16bit/mono).
+# There is no downmix loss to compensate, so the x6 was pure digital gain that
+# only CLIPPED the signal: on hardware (2026-10-16) 2.37% of speech samples
+# were clamped to +/-32767, while dividing by 6 showed the ADC peak at just
+# 16.7% of full scale - the ADC was never overdriven. Digital gain adds no SNR,
+# only distortion.
+#
+# 1 = no digital gain, full dynamic range preserved.
+# NOTE: keep this file ASCII-only; non-ASCII comments break CMake configure
+#       (nuttx_kconfig.cmake:48 string REGEX needs at least 5 arguments).
+CONFIG_AI_AGENT_AUDIO_CAPTURE_GAIN=1
 # CONFIG_AI_AGENT_NODE is not set
 # CONFIG_AI_AGENT_MCP is not set
 CONFIG_AI_AGENT_LVGL_UI=y
-# 手机侧网页对话：浏览器打开 http://<设备IP>:28789/ 即可拿到页面，
-# 页面再连同一端口的 WebSocket（无 App、无外网，只需蓝牙 PAN 链路）
 CONFIG_AI_AGENT_REST_API=y
 CONFIG_AI_AGENT_LCD_PATH="/dev/lcd0"
 CONFIG_AI_AGENT_TOUCH_PATH="/dev/input0"
@@ -467,7 +679,6 @@ CONFIG_NETUTILS_DHCPC_BOOTP_FLAGS=0x8000
 # R77: full BNEP Ethernet PDU in zblue global ACL pool (removes corrupt dedicated PAN pool)
 # TX_MTU raised to 1691: acl_tx_pool is sized by BT_L2CAP_BUF_SIZE(TX_MTU),
 # and BNEP data frames need up to 1691 bytes. The old comment about "never
-# reads this symbol" was wrong — the pool uses it at compile time.
 # CONFIG_BT_L2CAP_TX_MTU=1691  (set at line 233, no duplicate needed)
 # A NAP peer may send us a full 1691-byte BNEP PDU. At the old 1025 the ACL
 # reassembly buffer truncated large inbound frames, which shows up as stalled
@@ -486,7 +697,6 @@ CONFIG_BT_BUF_ACL_RX_SIZE=1695
 # whether to offer tethering, so PAN needs it set.
 CONFIG_BLUETOOTH_DEFAULT_COD=0x002A0704
 
-# ── On-device language model (velaAI TFLite Micro) ──────────────────────────
 # The local model lives in the team repo at app/ai_agent/ (ai_lm.cxx +
 # tokenizer.c + model/), and packages/ai_agent references those sources through
 # the packages/demos linkfile.  It is the reply engine whenever the cloud LLM
@@ -502,3 +712,77 @@ CONFIG_MATH_GEMMLOWP=y
 CONFIG_MATH_KISSFFT=y
 CONFIG_SYSTEM_FLATBUFFERS=y
 CONFIG_TFLITEMICRO=y
+
+CONFIG_LIB_OPUS=y
+CONFIG_LIB_OPUS_STACKSIZE=102400
+CONFIG_LIB_OPUS_PRIORITY=80
+
+# Opus codec (2026-10-14)
+# Why: 16kHz/16bit raw PCM is 32KB/s but the BT PAN uplink ceiling is ~12KB/s
+# (ACL in-flight window x fragments x RTT), so raw PCM can never stream in real
+# time. Opus at 16kbps is 2KB/s, i.e. 1/6 of the ceiling.
+# Real measurement on the board (opus_demo encoding a 4.096s recording):
+#   complexity 0  -> 2s  = 2.05x realtime  (can encode while recording)
+#   complexity 10 -> 6s  = 0.68x realtime  (good for offline encode)
+# NOTE: the library is built with -O2 explicitly (see external/opus/CMakeLists.txt);
+# without it everything was -O0 and 3x slower (0.68x realtime at complexity 0).
+# Validation-only switches, not needed in a shipping image:
+#   CONFIG_LIB_OPUS_DEMO=y        -> opus_demo encoder CLI (used for the numbers above)
+#   CONFIG_LIB_OPUS_ENCODE_TEST=y -> opus_enctest. It CRASHES on this board, but the
+#     fault is in the test itself: mscbr_encode_fail10() has a 627300-byte array on
+#     the stack, sized for an 8MB host stack. Not an Opus bug.
+CONFIG_LIB_OPUS=y
+CONFIG_LIB_OPUS_STACKSIZE=102400
+CONFIG_LIB_OPUS_PRIORITY=80
+
+# MPU6050 6-axis IMU (2026-10-22)
+# Uses the FREE I2C3 instance, muxed to PA00(SCL) / PA01(SDA).
+# Do NOT share I2C1 (touch, PA30/PA33) or I2C2 (MAX30102, PA41/PA42):
+# each I2C instance has one xxx_PINR register selecting exactly one pad
+# pair, so taking one over kicks the existing device off the bus.
+# PA00/PA01 are set in bsp_pinmux.c as GPIO_A0 / GPTIM1_CH4 (comments
+# mention LCD reset and backlight PWM) but NOTHING in the tree drives
+# either pad: panel reset uses the CO5300 software reset command and
+# brightness uses DCS 0x51, not PWM.
+CONFIG_BSP_USING_I2C3=y
+# CONFIG_BSP_I2C3_USING_DMA is not set
+CONFIG_SENSORS_MPU60X0=y
+CONFIG_MPU60X0_I2C=y
+# Both values MUST live here (defconfig), not in a hand-edited .config:
+# every cmake reconfigure regenerates .config from this file + Kconfig
+# defaults and would silently revert them.
+#   Measured 2026-10-24: with AFS_SEL back at its default 2 (+-8g) the rest
+#   magnitude dropped 8400 -> 4210 and every pedometer threshold became 2x
+#   too large, because pedometer.c works in raw LSB.
+#
+# 50000: this board has no external I2C pull-ups; SiFli's I2C app note says
+#        stay below 100k when relying on internal pull-ups. 400k fails.
+CONFIG_MPU60X0_I2C_FREQ=50000
+# 1 = +-4g (8192 LSB/g). pedometer.c thresholds are raw-LSB values tuned for
+#     this range; changing it requires retuning them.
+CONFIG_MPU60X0_ACCEL_AFS_SEL=1
+
+# BT HCI mailbox rings: MPU non-cacheable (fix drop invalid h4, docs 30 sec 22 root cause 2)
+CONFIG_ARM_MPU=y
+CONFIG_ARM_MPU_NREGIONS=8
+
+
+# TCP: 修复 BT PAN 下的丢包恢复慢(无 SACK/乱序时每次丢包等 RTO, 真机 TTS 下载呈 4-5s 突发间隔)
+CONFIG_NET_TCP_OUT_OF_ORDER=y
+CONFIG_NET_TCP_OUT_OF_ORDER_BUFSIZE=16384
+CONFIG_NET_TCP_SELECTIVE_ACK=y
+
+# 4G cellular (Air780E): user-space PPP over UART2 (/dev/ttyS0) + second TUN for ppp0
+CONFIG_NETUTILS_PPPD=y
+CONFIG_NETUTILS_CHAT=y
+CONFIG_TUN_NINTERFACES=2
+CONFIG_ARCH_HAVE_SERIAL_TERMIOS=y
+CONFIG_SERIAL_TERMIOS=y
+CONFIG_SYSTEM_CELLMON=y
+CONFIG_SYSTEM_CELLMON_STACKSIZE=2048
+CONFIG_SYSTEM_CELLMON_PRIORITY=100
+CONFIG_SYSTEM_LCDTOOL=y
+CONFIG_SYSTEM_LCDTOOL_STACKSIZE=2048
+CONFIG_SYSTEM_LCDTOOL_PRIORITY=100
+CONFIG_BOARDCTL_RESET=y
+CONFIG_SYSTEM_SYSRESET=y
