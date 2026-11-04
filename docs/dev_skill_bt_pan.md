@@ -31,6 +31,20 @@ HCPU→LCPU 邮箱 ring 要求整帧写入。**分块写入会让 LCPU 读指针
 - `pyserial` 默认 `open()` 会置位 RTS/DTR = **给板子断电**。要连续观察必须显式 `rts=False, dtr=False` 再 open。
 - 本机 CH343 桥的 RTS **不能**可靠控制电源（实测拉高不重启），冷启动要靠物理 RESET 或重新烧录。
 - `sftool --before default_reset` 抢 ROM bootloader 窗口有失败率，报 `Failed to download stub` 就重试 1–2 次。
+- **烧录成功的充要条件**是「sftool 的同步帧落在芯片上电后约 2000 ms 的 bootrom 窗口内」
+  （52 系列无 RST/EN 引脚，复位靠切断 VCC/PVDD，官方
+  [自动下载设计](https://wiki.sifli.com/hardware/SF32-auto-download.html)）。
+- **先判读到哪一步再决定动作**，别连续盲试：
+  - `Failed to download stub` / `Timeout("waiting for shell prompt")` = 没进窗口；
+    若串口同时出现 `nsh: ~ATSF32!...: command not found`，说明 sftool 正在跟**运行中的 NuttX**
+    对话（确定性证据），此时只能去制造复位，重试无用。
+  - `timeout while waiting for RAM command response` = sync 貌似建立但 RAM 命令无响应，仍未进 bootrom。
+- **可靠恢复姿势**：挂循环重试（`default_reset` 与 `no_reset_no_sync` 交替，各 3 次连接尝试）
+  的同时，人工每 2–3 s 按一次 RESET；或直接用 `docs_ble/tools/flash_rts.py`
+  （后台 sftool + 手工 RTS 断电 500 ms 再上电）。2026-10-10 实测：纯 `default_reset` 连续 10+ 次失败，
+  循环重试 + 人工 RESET 一次成功。
+- **烧录失败一般不破坏已烧固件**：只要进度条未进入写入阶段，失败后板子照样能启动到 `nsh>`。
+- 完整失败签名对照表见 [docs_ble/25](docs_ble/25_flash_reliability_and_audio_defects.md)。
 
 ## 二、症状 → 先查什么
 

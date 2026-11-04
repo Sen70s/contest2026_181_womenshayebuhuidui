@@ -107,9 +107,196 @@ HAL_FLASH_SET_QUAL_SPI(hflash, true);
 
 ---
 
+## P0 — 已修复（2026-10-14）
+
+### 24.10 蓝牙控制器 HCI 超时导致 `bluetoothd` 自杀（✅ 已修）
+
+**症状**：手机蓝牙共享**已打开**，手表却永远连不上；`ps` 里 `bluetoothd` /
+`bt_service_*` / `sysworkq` / `BT LW WQ` **全部消失**，只有重启板子能恢复。
+（这一点最容易误判：链路层"看起来"没问题，实际是蓝牙守护进程已经死了。）
+
+**根因**（addr2line 符号化 backtrace，两次崩溃同一行）：
+zblue 在 `bt_hci_cmd_send_sync()`（`host/hci_core.c:507`）用 `BT_ASSERT_MSG` 处理
+"控制器不应答" —— 控制器一旦对某条 HCI 命令超时，就升级成 `z_fatal_error`，
+把整个蓝牙进程打死。两次分别由 `bt_conn_enter_sniff_mode()`（SNIFF_MODE / opcode
+`0x0803`）与 `bt_br_write_local_name()`（设置设备名）触发 ⇒ **任何**命令都可能踩到。
+
+控制器为何不应答：vendor HCI 层在**合成/吞掉命令完成事件**，主机的"命令↔应答"配对错位 ——
+`sf32lb52 bth4: swallowed CC for injected op`、
+`OpCode 0x0c24 completed instead of expected 0x0c18`、
+`<wrn> opcode 0x0803 status 0x0c`。
+
+**修复**：`external/zblue` 提交 `78ba2004999` —— 改成 `LOG_ERR` + 归还 net_buf +
+`return -ETIMEDOUT`。★ 返回前**必须**先把 `cmd(buf)->sync` 置 NULL，否则迟到的完成事件会
+`k_sem_give` 一个**栈上**信号量（use-after-free）。
+真机验证：单次启动、`dhcp_ok ip=192.168.44.140`、`netmgr CONNECTED`、0 次 Assertion。
+
+**仍未修**：vendor HCI 层本身（`sf32lb52 bth4`）—— 现在是"**不再致命**"，不是"修好了"。
+
+### 24.11 自建硬件看门狗在开机阶段误判（✅ 已修）
+
+刷完固件后出现**约 20 秒一次的启动循环**（三次启动 `00:54:20 → 00:54:43 → 00:55:03`，
+且**没有任何崩溃 dump** ⇒ 不是 assert，是看门狗自己干的）。
+原因：`stall` 判据的基准时刻取自**看门狗线程启动**时，而开机阶段 UI 心跳还没开始跳，
+超过 8s 就判卡死 → 停止喂狗 → 20s 后把**正在正常启动**的板子复位。
+修复：`stall = (ui_seen != 0) && (ui_stuck_ms >= HW_STALL_MS)`
+（`packages/ai_agent` 提交 `79505a6`）。详见 [30 §26.5](30_status_report.md)。
+
+---
+
 ## P1 — 影响产品完整度
 
-### 24.2 本机蓝牙地址是硬编码假值
+### 24.12 语音上行带宽 —— ✅ 已解决（2026-10-14，改用 Ogg Opus）
+
+**原问题**：实测 BT PAN 上行 TLS 上传只有 **4.6~4.9 KB/s**（131369 字节要 50~57 秒），
+而 16 kHz/16 bit 原始 PCM 是 **32 KB/s**；叠加 `AGENT_VOICE_PCM_BUF_SIZE = 128 KB`
+（= 4 秒）硬上限（`read_pcm_file()` 会把更长的文件以 `File too large` 挡掉）。
+
+**解决**：上传前先编成 **Opus 16 kbps（2 KB/s）并包成 Ogg**：
+真机同一文件 131072 → **8471 字节（15.5×）**，整轮（含编码）**57 秒 → 8 秒**。
+- 为什么必须带容器：MiniMax **拒绝无容器的裸 Opus 码流**（稳定 HTTP 400
+  `Invalid data found when processing input`，换 `.ogg` 后缀也一样）—— 实测结论。
+- 编码器：树内 `external/opus`；**必须补 `-O2`**，此前全库是 `-O0`（见 24.17）。
+- 完整过程与证据：见 [30 §27](30_status_report.md)。
+
+**仍未解决的部分**：上行带宽本身没修好（→ 24.15）；识别仍是"录完 → 编码 → 整段上传"，
+不是流式，且 4 秒上限还在（→ 24.16）。
+
+### 24.15 蓝牙上行吞吐的结构性上限（P1，未解决）
+
+`~12 KB/s` 是结构性的：ACL 在飞窗口 × 分片 × RTT（`4×487B / RTT159ms ≈ 12 KB/s`，
+§22 根因1 实测 11.6 KB/s）。实测 TLS 上传只有 4.6~4.9 KB/s，差距来自
+**上行 TX 排队 → 占满共享 IOB 池 → RX 方向的 TCP ACK 拿不到 IOB 被丢**（缓冲膨胀反馈，
+`rx_tun_write_fail ... errno=11`）。
+
+**试过并已推翻的做法**：在 RX 侧对 EAGAIN 做有界退避重试 —— 实测无效
+（每条丢包日志都是 `tries=20`，3 ms 内 20 次全部 EAGAIN ⇒ 池是**持续**告罄而非瞬时），
+且每次白等 3 ms，已 revert（`8a706af1`）。**不要在 RX 侧重试，要从 TX 队列或池容量下手。**
+注意池容量受限：IOB 池在 **SRAM**（96.8 KB / 64 个），而 SRAM 静态占用已 82%；
+8 MB PSRAM 虽空着 89%，但 `CONFIG_IOB_SECTION` 需要链接脚本里的静态段，
+而本板 PSRAM 是运行时 `umm_addregion` 进去的 —— 想做要改链接脚本。
+
+### 24.16 语音编码仍是"录完再编"（P1，可优化）
+
+当前：说完 4 秒 → 编码 2 秒 → 上传/识别 6 秒 ≈ **12 秒**出文字。
+`complexity=0` 实测 **2.05× 实时**，有 2 倍余量 ⇒ 可以**边录边编码**省掉那 2 秒；
+再配合**分段上传**（官方推荐的 "client-side VAD for pseudo-streaming"）可再省 3~4 秒，
+有望进到 **5~6 秒**。见 [30 §27.8](30_status_report.md)。
+
+### 24.17 `external/opus` 曾被整库以 `-O0` 编译（✅ 已修，但值得记住）
+
+vendor 的 `CMakeLists.txt` 用 `target_compile_options()` 自己设 flags，**绕过 NuttX 给
+其他库的统一优化标志**，GCC 默认 `-O0`：编码 16 kHz 音频只有 0.68× 实时。
+补 `list(APPEND CFLAGS -O2)` 后 **快 3 倍**（c10: 19s→6s；c0: 6s→2s = 2.05× 实时），
+而且**固件还小了 160 KB**。教训：**新增第三方库后要检查它到底以什么优化级别编译**
+（`grep -A3 '<target>.*\.c\.o' build.ninja | grep FLAGS`）。
+
+### 24.18 实时语音采集从未工作过（✅ 已修，2026-10-14）
+
+**症状**：`voice_start` 必然失败
+
+```
+[voice] ASR pre-connected
+[audio_cap] media_recorder_open failed, errno=11
+[voice] capture open failed
+```
+
+**根因（看符号表，不是看代码）**：
+
+```
+$ arm-none-eabi-nm nuttx | grep media_recorder_
+120ed8d0 W media_recorder_close      ← 全部是 W(weak)
+120ed8ba W media_recorder_open
+...
+```
+
+`frameworks/multimedia/media` 里的真实现**没编进固件**，`src/stubs.c` 里那组
+"永远返回 NULL"的桩成了唯一实现。另一条 direct ALSA 路径的开关
+`CONFIG_AI_AGENT_AUDIO_ALSA_DIRECT` **没开**，且它依赖的
+`aw-alsa-lib/pcm.h` 全树都不存在（那是 Allwinner R528 的头）。
+
+**影响**：实时语音采集**从未工作**。此前所有"语音能用"的演示走的都是离线路径
+（`audio_rec_test` 录成文件 → `voice_test_asr` 识别），**离线路径能出结果
+掩盖了实时路径 100% 失败**。
+
+**修法**：新增 `src/voice/pcm_media_recorder.c`，用**强符号**直驱
+`/dev/audio/pcm0c`（序列照抄已被验证的 `audio_rec_test_main.c`），
+并**删掉 stubs.c 里的弱桩** —— 只加强实现不够，弱符号会先被链接器选中，
+归档里的强实现就永远没机会被拉进来（真机验证过：留着桩时 `nm` 仍是 `W`）。
+
+**★ 教训（写进检查表）**：
+1. 新增实现的符号如果与某处的桩同名，**必须把桩删掉**；判断方法
+   `nm <elf> | grep <symbol>` 看 `T` 还是 `W`。
+2. **"能出结果" ≠ "链路是通的"**。演示/验收脚本要覆盖**真实入口**，
+   不能只覆盖等价的离线路径。
+
+### 24.22 HTTP 429 没有退避重试（P1，影响可用性）
+
+2026-10-14 晚反复测试把 MiniMax 的配额打满，服务端返回 **429 Too Many Requests**
+（TTS 同样 429）。当前实现把它当普通失败直接放弃，用户看到的就是"识别失败"。
+**应当**：识别到 429 时按 `Retry-After` 退避重试 1~2 次，仍失败才报错。
+改法入口：`src/voice/minimax_tts.c` 的 `minimax_https_post()` 返回处，
+以及 `src/voice/minimax_asr.c` 的 `mm_asr_post_payload()`。
+
+### 24.23 采集偶发异常：0 块 / 极低实时率（P1，未定位）
+
+同一晚遇到两次，都发生在板子刚起来不久：
+
+| 现象 | 细节 |
+|---|---|
+| 采集读到 **0 块** | 45 秒一个字节都没读到 |
+| 采集只读到 **46 块** | 45 秒只采到 2.9 秒音频（约 **6% 实时率**） |
+
+两次都伴随开头的**满量程爆音**（`chunk#1: peak=32768`，正常应是 7000 上下），
+怀疑与音频通路刚启动时的状态有关。**不是 VAD/按键改动引入的**（"0 块"那次
+出现在改动之前）。排查入口：`src/voice/pcm_media_recorder.c` 的
+`media_recorder_read_data()`（超时返回 `-EAGAIN` 的路径）与音频驱动
+`AUDIOIOC_DEQUEUE` 的投递情况。**现象是"静默的"** —— 没有报错，
+只在 `chunk#` 计数上看得出来，所以要先加一条"实时率异常"的告警。
+
+### 24.20 能量型 VAD 在多人环境会挑"最响的声源"（P1，固有局限）
+
+真机遇到过一次：房间里有别人在聊天（底噪标定值 **7015**，是安静时的 3 倍），
+VAD 放行的是**环境对话**，说话人对表说的那句因为不够响反而没被放行。
+这不是实现 bug，是**能量型 VAD 的固有局限** —— 它只认能量，不认声源。
+可选方向：降低倍数阈值让 ASR 自己扛噪声（上传量回升）；或产品层面要求
+"靠近手表说"（本次验证就是这么做的，效果很好）。本板无双麦，做不了波束成形。
+
+### 24.21 ADC 增益要不要回调：**先别急着降**（P1，需对照实验）
+
+pcm-audio 技能测出 SNR 29.2 dB（阈值 40dB），技能建议"检查麦克风增益是否过高"；
+但同一段音频的**削波率是 0.00%** —— 说明增益并没有过载。
+SNR 低更可能是**环境噪声（声学）**而不是电路噪声。
+要判断必须做对照：**同一环境下降 ADC 增益再测底噪** ——
+- 底噪跟着**等比下降** ⇒ 噪声在 PGA **之前**（声学/麦克风自噪），**降增益并不能改善 SNR**；
+- 底噪**基本不变** ⇒ 噪声来自 PGA/ADC 之后，这时降增益才有用。
+
+**不要在没做这个对照前就调增益** —— 之前为了修"麦克风无响应"把增益一路加到
++30dB（量程上限），贸然降回去可能又把它弄哑。
+
+### 24.19 语音交互仍靠手动 start/stop（P1，待产品化）
+
+目前靠 CLI 的 `voice_start` / `voice_stop` 手动控制录制边界。产品化需要：
+- **静音检测（VAD）自动收尾**：说完了自动停，不用按键；
+- 或至少一个物理按键的按下/松开语义。
+另外官方文档明确建议的做法就是 "**client-side VAD for pseudo-streaming**"
+（MiniMax **不支持音频侧流式输入**），所以 VAD 也是分段上传方案的前置件。
+
+### 24.13 心率数值准确度：接受前稳定时间不足（P1）
+
+`hr_measure` 现在的规则是"第一批被连续确认两次的值就接受"，于是会锁定**接触瞬间的暂态**：
+真机连测三次得 143 / 136 / 85 bpm，而算法侧的 `pk5s=6 rr_med=700ms` 明明指向 85。
+**改法**：要求跑满 15~20s 且确认窗口拉长后才接受 —— 代价是出数变慢，换来数值可信。
+需真机复测。见 [30 §26.7](30_status_report.md)。
+
+### 24.14 长录音会卡住音频采集，并把 nsh 一起堵死（P1）
+
+`audio_rec_test 25` 在第 16 秒停住：不再打印 `sec N`、不出 `done`、
+连 `nsh>` 提示符也不再出现；`ps` 显示一个任务卡在 `WAIT_MQNOTEMPTY`，采集 DMA 停止。
+恢复只能重刷固件。`4`~`10` 秒的短录音正常（`done, 131072/323584 bytes`）。
+**影响**：任何"长按说话"的交互都会踩到；也说明 `audio_rec_test` 不适合做长稳测试。
+**注意**：阻塞型 `audio_rec_test` 会把 nsh 的 stdin 一起占住 —— 这反而可以当作
+"把命令送给 `vela>` CLI"的手段（见 [30 §26.3](30_status_report.md)）。
 
 手表对外显示 `cd:ab:78:56:34:12`，设备名 `Agent-Watch-cd:ab:78:56:34:12`，bt-pan 网卡
 MAC 也是它。多台设备同时在场会撞地址；而 `pan_get_device_id()` 用
