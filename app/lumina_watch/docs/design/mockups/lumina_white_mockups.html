@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LuminaWatch 白色重设计 · 静态稿 v2</title>
+<style>
+  :root{--ink:#1C1C1E;--ink2:#636366;--line:#E5E5EA;--group:#F2F2F7;--accent:#B86600;--blue:#007AFF;--heart:#FF2D55;--oxy:#00A7D8;--mint:#00C7BE}
+  *{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+  body{margin:0;background:#DDE0E6;font-family:"PingFang SC","Microsoft YaHei",-apple-system,"Segoe UI",sans-serif;color:var(--ink)}
+  .board{width:1320px;padding:28px;display:grid;grid-template-columns:repeat(3,390px);gap:30px}
+  .slot{width:390px}
+  .phone{width:390px;height:844px;background:#fff;border-radius:52px;position:relative;overflow:hidden;box-shadow:0 18px 50px rgba(20,24,32,.22)}
+  .caption{margin-top:10px;text-align:center;font-size:12.5px;color:#4A4E57;line-height:18px}
+  .caption b{color:#1C1C1E}
+  .framenote{width:1320px;margin:10px 0 26px;padding:12px 18px;border-radius:14px;background:#fff;color:#3C4048;font-size:13px;line-height:20px}
+  .framenote b{color:#1C1C1E}
+  .status{height:50px;display:flex;align-items:center;justify-content:space-between;padding:0 26px;font-size:13px;font-weight:600}
+  .island{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:96px;height:28px;border-radius:16px;background:#0B0B0D}
+  .status .right{display:flex;gap:6px;align-items:center}
+  .bar{width:16px;height:10px;border:1.4px solid currentColor;border-radius:3px;position:relative}
+  .bar:after{content:"";position:absolute;right:-3px;top:2.5px;width:2px;height:4px;background:currentColor;border-radius:1px}
+  .bar:before{content:"";position:absolute;left:1.5px;top:1.5px;width:9px;height:5px;background:currentColor;border-radius:1px}
+  .scroll{height:794px;overflow:hidden;padding:0 20px}
+  .scroll.withbar{height:704px}
+  h1.big{font-size:34px;line-height:41px;font-weight:800;letter-spacing:-.5px;margin:4px 0 12px}
+  .toprow{display:flex;align-items:center;gap:6px;color:var(--accent);font-size:14px;margin-top:4px}
+  .search{height:38px;border-radius:12px;background:#F2F2F7;display:flex;align-items:center;gap:8px;padding:0 12px;color:#8E8E93;font-size:14px;margin:8px 0 16px}
+  .navrow{display:flex;align-items:center;gap:8px;margin:4px 0 10px;color:var(--accent);font-size:15px}
+  .navrow .back{font-size:22px;line-height:1}
+  .title{font-size:22px;font-weight:800;margin:22px 0 10px;letter-spacing:-.2px}
+  .sub{font-size:13px;color:var(--ink2);line-height:19px}
+  .group{background:var(--group);border-radius:14px;overflow:hidden;margin:0 0 8px}
+  .row{display:flex;align-items:center;gap:12px;padding:10px 14px;min-height:62px;background:var(--group);position:relative}
+  .row + .row:before{content:"";position:absolute;left:58px;right:0;top:0;height:.5px;background:#D9D9DF}
+  .ico{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:0 0 32px;background:#FFE8C8;color:var(--accent)}
+  .ico.blue{background:#E3F0FF;color:var(--blue)}.ico.red{background:#FFE5EA;color:var(--heart)}.ico.oxy{background:#E0F6FC;color:var(--oxy)}.ico.mint{background:#DFF8F6;color:var(--mint)}.ico.dark{background:#ECEDF0;color:#3A3A3C}
+  .ico svg{width:20px;height:20px}
+  .rt{flex:1;min-width:0}
+  .rt .t{font-size:16px;line-height:21px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rt .s{font-size:12px;line-height:17px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chev{color:#8E8E93;font-size:17px}
+  .cap{font-size:12px;color:var(--ink2);margin:8px 2px 18px;line-height:17px}
+  .sectionhead{display:flex;align-items:center;margin:12px 0 8px}
+  .sectionhead .h{font-size:21px;font-weight:800;flex:1;letter-spacing:-.2px}
+  .sectionhead .a{font-size:15px;color:var(--accent)}
+  .faces{display:flex;gap:12px;overflow:hidden}
+  .facecard{width:150px;flex:0 0 150px;border-radius:18px;background:#F2F2F7;padding:12px 8px 10px;text-align:center}
+  .facecard.sel{background:#FFF4E4;outline:1.5px solid #F0B357}
+  .watch{position:relative;width:118px;height:146px;margin:0 auto}
+  .watch .strap{position:absolute;left:50%;transform:translateX(-50%);width:44px;height:146px;background:#3E3E44;border-radius:12px}
+  .watch .body{position:absolute;top:20px;left:0;width:118px;height:106px;border-radius:32px;background:#0A0A0C;padding:5px;box-shadow:0 4px 10px rgba(0,0,0,.18)}
+  .watch .screen{width:100%;height:100%;border-radius:27px;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
+  .watch .time{font-size:23px;font-weight:800;letter-spacing:-.5px}
+  .watch .brand{font-size:9px;color:rgba(0,0,0,.55);margin-top:2px}
+  .f-white .screen{background:linear-gradient(160deg,#FFFFFF,#EDF1F4)}
+  .f-white .time{color:#1C1C1E}
+  .f-coral .screen{background:linear-gradient(160deg,#FF9A7E,#F84E6B);color:#fff}
+  .f-coral .brand{color:rgba(255,255,255,.8)}
+  .f-dark .screen{background:linear-gradient(160deg,#3A3A40,#08080A);color:#fff}
+  .f-dark .brand{color:rgba(255,255,255,.65)}
+  .fname{font-size:15px;font-weight:600;margin-top:8px}
+  .fstate{font-size:12px;color:var(--ink2);margin-top:2px}
+  .facecard.sel .fstate{color:var(--accent)}
+  .tabbar{position:absolute;left:20px;right:20px;bottom:18px;height:72px;background:rgba(255,255,255,.86);border:.5px solid rgba(0,0,0,.06);border-radius:36px;display:flex;align-items:center;padding:6px;box-shadow:0 8px 24px rgba(20,24,32,.10)}
+  .tab{flex:1;height:60px;border-radius:30px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:#8E8E93;font-size:11px}
+  .tab svg{width:22px;height:22px}
+  .tab.sel{background:#F2F2F7;color:var(--ink);font-weight:600}
+  .homebar{position:absolute;bottom:7px;left:50%;transform:translateX(-50%);width:120px;height:5px;border-radius:3px;background:#111}
+  .hero{margin:4px 0 14px;border-radius:20px;padding:16px 18px 14px;color:#1C1C1E;background:linear-gradient(120deg,#FBE9D6,#F3D2C0 50%,#EAD7E8)}
+  .hero .k{font-size:18px;font-weight:800}
+  .hero .stage{height:150px;display:flex;align-items:center;justify-content:center}
+  .hero .d{text-align:center;font-size:12px;color:#6B5B50}
+  .glist{display:flex;flex-direction:column;gap:12px}
+  .gitem{display:flex;align-items:center;gap:14px;background:#F2F2F7;border-radius:18px;padding:12px 14px}
+  .gitem .mini{width:92px;height:100px;display:flex;align-items:center;justify-content:center;flex:0 0 92px}
+  .gitem .mini .watch{transform:scale(.68)}
+  .gitem .gt{font-size:16px;font-weight:700}
+  .gitem .gs{font-size:12px;color:var(--ink2);margin-top:3px;line-height:16px}
+  .gitem .right{margin-left:auto;color:var(--accent);font-size:13px;font-weight:600}
+  .discover-sec{margin:22px 0 6px}
+  .discover-sec .h{font-size:21px;font-weight:800}
+  .discover-row{display:flex;align-items:center;gap:14px;padding:12px 0}
+  .discover-row + .discover-row{border-top:.5px solid #E5E5EA}
+  .bigico{width:56px;height:56px;border-radius:15px;display:flex;align-items:center;justify-content:center;flex:0 0 56px;color:#fff}
+  .bigico svg{width:26px;height:26px}
+  .dt{font-size:16px;font-weight:600}.ds{font-size:12px;color:var(--ink2);margin-top:2px}
+  .grad1{background:linear-gradient(140deg,#F7B267,#D96C3B)}.grad2{background:linear-gradient(140deg,#7BC6FF,#3A7BFF)}
+  .grad3{background:linear-gradient(140deg,#7BE0C3,#1C9C86)}.grad4{background:linear-gradient(140deg,#FF9AB5,#F0466E)}
+  .grad5{background:linear-gradient(140deg,#C6A8FF,#7A54E8)}
+  .metrics{display:flex;gap:12px}
+  .metric{flex:1;background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px}
+  .metric .mh{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2)}
+  .metric .mv{font-size:30px;font-weight:800;letter-spacing:-.5px;margin-top:6px}
+  .metric .mv small{font-size:12px;font-weight:500;color:var(--ink2);margin-left:3px}
+  .seg{height:36px;border-radius:12px;background:#F2F2F7;display:flex;align-items:center;padding:3px;margin:16px 0 12px}
+  .seg span{flex:1;text-align:center;font-size:13px;color:var(--ink2);line-height:30px;border-radius:10px}
+  .seg span.on{background:#fff;color:var(--ink);font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .chart{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px}
+  .chart .ch{display:flex;justify-content:space-between;font-size:12px;color:var(--ink2);margin-bottom:6px}
+  .stats{display:flex;background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:12px}
+  .stat{flex:1;text-align:center}
+  .stat .sl{font-size:11px;color:var(--ink2)}.stat .sv{font-size:19px;font-weight:800;margin-top:3px}
+  .steps{display:flex;gap:6px;margin:4px 0 14px}
+  .steps i{height:4px;border-radius:2px;background:#E5E5EA;flex:1}
+  .steps i.on{background:#E9A06F}
+  .cloudwrap{height:250px;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 42%,#FFF7EE,#FFFFFF 72%)}
+  .cloud{position:relative;width:210px;height:160px;filter:drop-shadow(0 18px 22px rgba(190,120,70,.18))}
+  .cloud i{position:absolute;border-radius:50%;border:1.5px solid rgba(255,255,255,.92);
+    background:linear-gradient(145deg,rgba(255,255,255,.66),rgba(255,255,255,.10) 38%,rgba(246,205,175,.38) 72%,rgba(224,150,105,.30));
+    box-shadow:inset 0 2px 2px rgba(255,255,255,.95),inset 0 -14px 24px rgba(170,95,55,.28),0 8px 18px rgba(190,120,70,.20),0 1px 0 rgba(255,255,255,.9);
+    backdrop-filter:blur(7px);opacity:.9}
+  .cloud i:nth-child(1){left:6px;top:76px;width:154px;height:66px;opacity:.66}
+  .cloud i:nth-child(2){left:18px;top:46px;width:84px;height:84px;opacity:.7}
+  .cloud i:nth-child(3){left:62px;top:22px;width:100px;height:100px;opacity:.78}
+  .cloud i:nth-child(4){left:124px;top:50px;width:76px;height:76px;opacity:.64}
+  .cloud i:nth-child(5){left:96px;top:92px;width:74px;height:48px;opacity:.74}
+  .cloud b{position:absolute;left:58px;top:42px;width:60px;height:30px;border-radius:50%;background:radial-gradient(circle at 40% 40%,rgba(255,255,255,.95),rgba(255,255,255,0));transform:rotate(-18deg)}
+  .moodlabel{font-size:26px;font-weight:800;margin:6px 0 12px}
+  .slider{height:6px;border-radius:3px;background:linear-gradient(90deg,#D9B9A0,#E9A06F);position:relative;margin:10px 0 8px}
+  .slider b{position:absolute;left:48%;top:-7px;width:20px;height:20px;border-radius:50%;background:#fff;border:2px solid #E9A06F;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+  .scale{display:flex;justify-content:space-between;font-size:11px;color:var(--ink2)}
+  .cta{position:absolute;left:20px;right:20px;bottom:28px;height:52px;border-radius:16px;background:#E9A06F;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700}
+  .chips{display:flex;flex-wrap:wrap;gap:9px;margin:8px 0 18px}
+  .chip{padding:9px 14px;border-radius:16px;background:#F2F2F7;font-size:14px}
+  .chip.on{background:#FFF1E3;color:#A95B22;outline:1px solid #F0B357}
+  .preview{display:flex;align-items:center;gap:12px;background:#FFF7EF;border:1px solid #F3DFC9;border-radius:14px;padding:10px 12px;margin:14px 0 0}.preview .minicloud{transform:scale(1.4);transform-origin:left center;margin-left:4px}.preview .pt{font-size:14px;font-weight:600}.preview .ps{font-size:11px;color:#8A6A50;margin-top:2px}.note{height:92px;border-radius:14px;border:1px solid var(--line);padding:12px;color:#8E8E93;font-size:13px}
+  .week{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;text-align:center;font-size:11px;color:var(--ink2);margin:8px 0 6px}
+  .days{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+  .day{aspect-ratio:1;border-radius:10px;border:.8px solid #E3E3E8;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:12px;gap:2px;position:relative}
+  .day.sel{border-color:#E9A06F;background:#FFF7EF;font-weight:700}
+  .day.mut{opacity:.35}
+  .minicloud{width:26px;height:16px;position:relative}
+  .minicloud i{position:absolute;background:radial-gradient(circle at 35% 30%,#FFE3C6,#E9A06F);border-radius:50%;border:.6px solid rgba(255,255,255,.8)}
+  .minicloud i:nth-child(1){left:0;top:4px;width:12px;height:10px}
+  .minicloud i:nth-child(2){left:6px;top:0;width:13px;height:13px}
+  .minicloud i:nth-child(3){left:12px;top:4px;width:10px;height:10px}
+  .badge{position:absolute;top:2px;right:3px;min-width:14px;height:14px;border-radius:7px;background:#E9A06F;color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center;padding:0 3px}
+  .chathead{display:flex;align-items:center;gap:10px;padding:10px 0 14px}
+  .avatar{width:42px;height:42px;border-radius:50%;background:#EAF1FF;display:flex;align-items:center;justify-content:center}
+  .bubble{max-width:78%;padding:11px 14px;border-radius:18px;font-size:14px;line-height:21px;margin:8px 0}
+  .bubble.them{background:#F2F2F7;border-bottom-left-radius:6px}
+  .bubble.me{background:#0B84FF;color:#fff;margin-left:auto;border-bottom-right-radius:6px}
+  .composer{position:absolute;left:16px;right:16px;bottom:22px;height:52px;border-radius:26px;background:#F2F2F7;display:flex;align-items:center;padding:0 8px;gap:8px;font-size:13px;color:#8E8E93}
+  .send{width:36px;height:36px;border-radius:50%;background:#0B84FF;margin-left:auto;display:flex;align-items:center;justify-content:center;color:#fff}
+  .wheels{display:flex;justify-content:center;align-items:center;gap:10px;height:240px;border-radius:16px;background:#fff;border:1px solid var(--line);margin:8px 0 14px;position:relative;overflow:hidden}
+  .wheels .band{position:absolute;left:22px;right:22px;top:92px;height:56px;border-radius:14px;background:#F2F2F7}
+  .col{width:90px;text-align:center;z-index:1}
+  .col .v{font-size:24px;color:#C7C7CC;line-height:40px}
+  .col .v.on{font-size:34px;font-weight:700;color:var(--ink);line-height:56px}
+  .colon{font-size:28px;font-weight:700;z-index:1}
+  .steps.mood i.on{background:#2E8B6E}.chip.moodon{background:#E8F5EE;color:#256B55;outline:1px solid #7FBF9A}.cta.mood{background:#2E8B6E}.slider.mood{background:linear-gradient(90deg,#2E8B6E,#BFE3CC)}.slider.mood b{border-color:#2E8B6E}.cloudwrap.kept{height:250px;background:radial-gradient(circle at 50% 40%,#F5FBF7,#FFFFFF 72%)}.cloudwrap.kept.small{height:150px;margin-top:6px}.keptcloud{width:250px;height:170px;filter:drop-shadow(0 18px 20px rgba(70,130,100,.18))}.keptcloud.small{width:200px;height:132px}.moodlabel{color:#1C1C1E}.danger{color:#FF3B30;text-align:center;font-size:15px;padding:14px 0}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute"><defs>
+<radialGradient id="moodGlassR" cx="42%" cy="30%" r="75%"><stop offset="0" stop-color="#FBFEFC"/><stop offset=".42" stop-color="#DFF3E7"/><stop offset=".78" stop-color="#B7DEC7"/><stop offset="1" stop-color="#8FC7A7"/></radialGradient>
+<radialGradient id="moodSpec"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".85"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient><radialGradient id="moodGlow"><stop offset="0" stop-color="#DFF3E7" stop-opacity=".9"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+</defs></svg>
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="i-watch" viewBox="0 0 24 24"><rect x="7" y="6" width="10" height="12" rx="2.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9 6V4h6v2M9 18v2h6v-2" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+<symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.4a2 2 0 0 0 0-4H12a2 2 0 0 1 0-4h4.5A4.5 4.5 0 0 0 21 8.5C21 5.5 17 3 12 3Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="13" r="1.2" fill="currentColor"/></symbol>
+<symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m14.8 9.2-1.6 4-4 1.6 1.6-4z" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+<symbol id="i-alarm" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 9v4l2.6 1.6M5 5 3.4 6.8M19 5l1.6 1.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+<symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20s-7-4.3-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.7-7 9-7 9Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+<symbol id="i-mood" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 14.2c.9 1.4 2.1 2.1 3.5 2.1s2.6-.7 3.5-2.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.2" cy="10" r="1" fill="currentColor"/><circle cx="14.8" cy="10" r="1" fill="currentColor"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 12a7.5 7.5 0 0 1-11 6.6L4 20l1.4-4A7.5 7.5 0 1 1 20 12Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+<symbol id="i-care" viewBox="0 0 24 24"><path d="M12 20c4-2.8 7-5.6 7-9a4 4 0 0 0-7-2.6A4 4 0 0 0 5 11c0 3.4 3 6.2 7 9Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 12v4M10 14h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 9h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+<symbol id="i-doc" viewBox="0 0 24 24"><rect x="5" y="3.5" width="14" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 9h7M8.5 12.5h7M8.5 16h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-sync" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+<symbol id="i-face" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="9" cy="10" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><path d="M9 14.2c.8 1.1 1.8 1.6 3 1.6s2.2-.5 3-1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 4 8 4-8 4-8-4 8-4Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m4 12 8 4 8-4M4 16l8 4 8-4" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+</defs></svg>
+
+<div class="board">
+<!-- 1 我的手表 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll withbar">
+  <div class="toprow"><span>所有手表</span><span style="font-size:16px">›</span></div>
+  <h1 class="big">小云手表</h1>
+  <div class="search"><svg width="16" height="16"><use href="#i-search"/></svg><span>搜索设置</span></div>
+  <div class="sectionhead"><div class="h">我的表盘</div><div class="a">编辑</div></div>
+  <div class="faces">
+    <div class="facecard sel"><div class="watch f-white"><div class="strap"></div><div class="body"><div class="screen"><div class="time">10:24</div><div class="brand">小云</div></div></div></div><div class="fname">纯白</div><div class="fstate">当前预览</div></div>
+    <div class="facecard"><div class="watch f-coral"><div class="strap"></div><div class="body"><div class="screen"><div class="time">10:24</div><div class="brand">小云</div></div></div></div><div class="fname">珊瑚</div><div class="fstate">轻点选择</div></div>
+    <div class="facecard"><div class="watch f-dark"><div class="strap"></div><div class="body"><div class="screen"><div class="time">10:24</div><div class="brand">小云</div></div></div></div><div class="fname">深色</div><div class="fstate">轻点选择</div></div>
+  </div>
+  <div class="sectionhead"><div class="h" style="font-size:17px">手表设置</div></div>
+  <div class="group">
+    <div class="row"><div class="ico"><svg><use href="#i-alarm"/></svg></div><div class="rt"><div class="t">闹钟</div><div class="s">下一闹钟 07:30 · 仅本机保存</div></div><div class="chev">›</div></div>
+    <div class="row"><div class="ico blue"><svg><use href="#i-sync"/></svg></div><div class="rt"><div class="t">连接与同步</div><div class="s">尚未连接 · 未接入云岸</div></div><div class="chev">›</div></div>
+    <div class="row"><div class="ico mint"><svg><use href="#i-face"/></svg></div><div class="rt"><div class="t">小云形象</div><div class="s">更换 App 内的角色外观</div></div><div class="chev">›</div></div>
+    <div class="row"><div class="ico dark"><svg><use href="#i-gear"/></svg></div><div class="rt"><div class="t">个人与隐私</div><div class="s">共享偏好与本机数据</div></div><div class="chev">›</div></div>
+  </div>
+</div>
+<div class="tabbar"><div class="tab sel"><svg><use href="#i-watch"/></svg><span>我的手表</span></div><div class="tab"><svg><use href="#i-palette"/></svg><span>表盘图库</span></div><div class="tab"><svg><use href="#i-compass"/></svg><span>发现</span></div></div><div class="homebar"></div></div>
+<div class="caption"><b>我的手表</b> · 所有手表入口 + 设备名大标题 + 搜索；参考 1.mp4 00:01</div></div>
+
+<!-- 2 表盘图库 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll withbar">
+  <h1 class="big">表盘图库</h1>
+  <div class="hero"><div class="k">我的表盘</div><div class="stage"><div class="watch f-white"><div class="strap"></div><div class="body"><div class="screen"><div class="time">10:24</div><div class="brand">小云</div></div></div></div></div><div class="d">当前：纯白 · 仅手机预览，未下发手表</div></div>
+  <div class="title" style="font-size:17px;margin:4px 0 10px">全部表盘（3）</div>
+  <div class="glist">
+    <div class="gitem"><div class="mini"><div class="watch f-white"><div class="strap"></div><div class="body"><div class="screen"><div class="time">10:24</div></div></div></div></div><div><div class="gt">纯白</div><div class="gs">清晰易读，当前使用</div></div><div class="right">✓</div></div>
+    <div class="gitem"><div class="mini"><div class="watch f-coral"><div class="strap"></div><div class="body"><div class="screen"><div class="time">10:24</div></div></div></div></div><div><div class="gt">珊瑚</div><div class="gs">明亮渐变，轻点预览</div></div><div class="right">选择</div></div>
+    <div class="gitem"><div class="mini"><div class="watch f-dark"><div class="strap"></div><div class="body"><div class="screen"><div class="time">10:24</div></div></div></div></div><div><div class="gt">深色</div><div class="gs">沉静对比，轻点预览</div></div><div class="right">选择</div></div>
+  </div>
+</div>
+<div class="tabbar"><div class="tab"><svg><use href="#i-watch"/></svg><span>我的手表</span></div><div class="tab sel"><svg><use href="#i-palette"/></svg><span>表盘图库</span></div><div class="tab"><svg><use href="#i-compass"/></svg><span>发现</span></div></div><div class="homebar"></div></div>
+<div class="caption"><b>表盘图库</b> · 只展示 3 款真实可选项；不复制录屏表盘库</div></div>
+
+<!-- 3 发现 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll withbar">
+  <h1 class="big">发现</h1>
+  <div class="discover-sec"><div class="h">现在开始</div></div>
+  <div>
+    <div class="discover-row"><div class="bigico grad1"><svg><use href="#i-watch"/></svg></div><div class="rt"><div class="dt">认识小云</div><div class="ds">陪伴式健康与心情记录</div></div><div class="chev">›</div></div>
+    <div class="discover-row"><div class="bigico grad2"><svg><use href="#i-mood"/></svg></div><div class="rt"><div class="dt">记录一次心情</div><div class="ds">三步完成，云会随情绪变化</div></div><div class="chev">›</div></div>
+    <div class="discover-row"><div class="bigico grad3"><svg><use href="#i-heart"/></svg></div><div class="rt"><div class="dt">查看健康概览</div><div class="ds">心率、血氧与活动，来源清楚</div></div><div class="chev">›</div></div>
+  </div>
+  <div class="discover-sec" style="margin-top:28px"><div class="h">了解更多小云功能</div></div>
+  <div>
+    <div class="discover-row"><div class="bigico grad4"><svg><use href="#i-care"/></svg></div><div class="rt"><div class="dt">关怀与提醒</div><div class="ds">时间线、回访与安静时段</div></div><div class="chev">›</div></div>
+    <div class="discover-row"><div class="bigico grad5"><svg><use href="#i-chat"/></svg></div><div class="rt"><div class="dt">小云对话与记忆</div><div class="ds">继续聊天，或调整角色设定</div></div><div class="chev">›</div></div>
+  </div>
+  <div class="cap">发现页为原创延展；内容型大图标行参考录屏，不含 Apple 功能名。</div>
+</div>
+<div class="tabbar"><div class="tab"><svg><use href="#i-watch"/></svg><span>我的手表</span></div><div class="tab"><svg><use href="#i-palette"/></svg><span>表盘图库</span></div><div class="tab sel"><svg><use href="#i-compass"/></svg><span>发现</span></div></div><div class="homebar"></div></div>
+<div class="caption"><b>发现</b> · 大图标内容行、无分组卡片；参考 1.mp4 01:20 的版式</div></div>
+
+<!-- 4 手表设置 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="navrow"><span class="back">‹</span><span>我的手表</span></div><h1 class="big" style="font-size:30px;margin-top:0">小云手表</h1>
+  <div class="group"><div class="row"><div class="ico blue"><svg><use href="#i-watch"/></svg></div><div class="rt"><div class="t">连接状态</div><div class="s">尚未连接 · 未接入云岸</div></div><div class="chev">›</div></div><div class="row"><div class="ico dark"><svg><use href="#i-sync"/></svg></div><div class="rt"><div class="t">同步与电量</div><div class="s">未知 · 不显示虚假同步</div></div><div class="chev">›</div></div></div>
+  <div class="title" style="font-size:17px">通用</div>
+  <div class="group"><div class="row"><div class="ico"><svg><use href="#i-alarm"/></svg></div><div class="rt"><div class="t">通知</div><div class="s">本机偏好，不驱动真实手表</div></div><div class="chev">›</div></div><div class="row"><div class="ico blue"><svg><use href="#i-layers"/></svg></div><div class="rt"><div class="t">控制中心</div><div class="s">演示开关</div></div><div class="chev">›</div></div><div class="row"><div class="ico mint"><svg><use href="#i-gear"/></svg></div><div class="rt"><div class="t">显示与亮度</div><div class="s">随系统外观</div></div><div class="chev">›</div></div></div>
+  <div class="title" style="font-size:17px">健康</div>
+  <div class="group"><div class="row"><div class="ico red"><svg><use href="#i-heart"/></svg></div><div class="rt"><div class="t">心率</div><div class="s">预览值 78 次/分 · 来源：本机预览</div></div><div class="chev">›</div></div><div class="row"><div class="ico oxy"><svg><use href="#i-heart"/></svg></div><div class="rt"><div class="t">血氧</div><div class="s">预览值 98% · 来源：本机预览</div></div><div class="chev">›</div></div></div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>手表设置</b> · 分组列表模板；参考 1.mp4 00:14–00:24</div></div>
+
+<!-- 5 健康 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="navrow"><span class="back">‹</span><span>发现</span></div><h1 class="big" style="font-size:30px;margin-top:0">健康</h1>
+  <div class="metrics"><div class="metric"><div class="mh"><span class="ico red" style="width:22px;height:22px;border-radius:7px"><svg style="width:14px;height:14px"><use href="#i-heart"/></svg></span>心率</div><div class="mv">78<small>次/分</small></div><div class="sub" style="font-size:11px">本机预览 · 今天</div></div><div class="metric"><div class="mh"><span class="ico oxy" style="width:22px;height:22px;border-radius:7px"><svg style="width:14px;height:14px"><use href="#i-heart"/></svg></span>血氧</div><div class="mv">98<small>%</small></div><div class="sub" style="font-size:11px">本机预览 · 今天</div></div></div>
+  <div class="seg"><span class="on">日</span><span>周</span><span>月</span><span>年</span></div>
+  <div class="chart"><div class="ch"><b style="color:#1C1C1E">心率趋势</b><span>20:00 · 78 次/分</span></div><svg viewBox="0 0 300 120" width="100%" height="150"><path d="M0 96 L40 88 L80 92 L120 50 L160 34 L200 62 L240 80 L300 86" fill="none" stroke="#FF2D55" stroke-width="3"/><path d="M0 96 L40 88 L80 92 L120 50 L160 34 L200 62 L240 80 L300 86 L300 120 L0 120Z" fill="#FF2D55" opacity=".08"/></svg><div class="ch"><span>08:00</span><span>20:00</span></div></div>
+  <div class="stats"><div class="stat"><div class="sl">最低</div><div class="sv">68</div></div><div class="stat"><div class="sl">平均</div><div class="sv">81</div></div><div class="stat"><div class="sl">最高</div><div class="sv">104</div></div></div>
+  <div class="cap">数值、单位、来源与时间同层；图表不用玻璃，空态显示“暂无测量记录”。</div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>健康</b> · 原创延展（无 Apple 对应页）</div></div>
+
+<!-- 6 心情 1/3（保持当前 App 云与滑块） -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="navrow"><span class="back">‹</span><span>记录心情</span><span style="margin-left:auto;color:#8E8E93">1 / 3</span></div>
+  <div class="steps mood"><i class="on"></i><i></i><i></i></div>
+  <div class="chips" style="margin:0 0 10px"><div class="chip moodon" style="font-size:12px;padding:6px 11px">当下感受</div><div class="chip" style="font-size:12px;padding:6px 11px">今天整体感受</div></div>
+  <div class="title" style="margin-top:0">此刻，你感觉怎么样？</div>
+  <div class="cloudwrap kept"><svg class="keptcloud" viewBox="0 0 240 170"><ellipse cx="120" cy="120" rx="95" ry="45" fill="url(#moodGlow)"/><g transform="translate(120 85) scale(1) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="url(#moodGlassR)" stroke="rgba(255,255,255,.86)" stroke-width="2.2"/></g><g transform="translate(120 85) scale(.86) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.20)" stroke="rgba(255,255,255,.74)" stroke-width="2"/></g><g transform="translate(120 85) scale(.72) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.20)" stroke="rgba(255,255,255,.64)" stroke-width="1.8"/></g><g transform="translate(120 85) scale(.58) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.22)" stroke="rgba(255,255,255,.56)" stroke-width="1.6"/></g><circle cx="112" cy="66" r="30" fill="url(#moodSpec)"/></svg></div>
+  <div class="moodlabel">平静</div><div class="slider mood"><b></b></div><div class="scale"><span>很不愉快</span><span>很愉快</span></div>
+  <div class="cap" style="margin-top:14px">保留当前分层小云、滑块与心情色；只统一导航、排版与按钮。</div>
+  <div class="cta mood">下一步</div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>心情 1/3（保持页）</b> · 当前分层小云 + 滑块；新版仅统一导航/按钮</div></div>
+
+<!-- 7 心情 2/3 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="navrow"><span class="back">‹</span><span>记录心情</span><span style="margin-left:auto;color:#8E8E93">2 / 3</span></div>
+  <div class="steps mood"><i class="on"></i><i class="on"></i><i></i></div>
+  <div class="cloudwrap small kept"><svg class="keptcloud small" viewBox="0 0 240 170"><ellipse cx="120" cy="120" rx="95" ry="45" fill="url(#moodGlow)"/><g transform="translate(120 85) scale(1) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="url(#moodGlassR)" stroke="rgba(255,255,255,.86)" stroke-width="2.2"/></g><g transform="translate(120 85) scale(.86) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.20)" stroke="rgba(255,255,255,.74)" stroke-width="2"/></g><g transform="translate(120 85) scale(.72) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.20)" stroke="rgba(255,255,255,.64)" stroke-width="1.8"/></g><g transform="translate(120 85) scale(.58) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.22)" stroke="rgba(255,255,255,.56)" stroke-width="1.6"/></g><circle cx="112" cy="66" r="30" fill="url(#moodSpec)"/></svg></div>
+  <div class="moodlabel" style="font-size:22px;text-align:center;margin:4px 0 10px">平静</div>
+  <div class="title" style="font-size:20px;margin:6px 0 4px">哪些词最贴近这种感受？</div>
+  <div class="sub">可选 1–3 个，也可以直接继续。</div>
+  <div class="chips" style="margin-top:14px"><div class="chip">开心</div><div class="chip">兴奋</div><div class="chip">放松</div><div class="chip">满足</div><div class="chip moodon">有能量</div><div class="chip">期待</div><div class="chip">自信</div><div class="chip">感恩</div><div class="chip moodon">平静</div></div>
+  <div class="cta mood">下一步</div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>心情 2/3</b> · 保留云/情绪色与词选择；导航、按钮统一</div></div>
+
+<!-- 8 心情 3/3 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="navrow"><span class="back">‹</span><span>记录心情</span><span style="margin-left:auto;color:#8E8E93">3 / 3</span></div>
+  <div class="steps mood"><i class="on"></i><i class="on"></i><i class="on"></i></div>
+  <div class="cloudwrap small kept"><svg class="keptcloud small" viewBox="0 0 240 170"><ellipse cx="120" cy="120" rx="95" ry="45" fill="url(#moodGlow)"/><g transform="translate(120 85) scale(1) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="url(#moodGlassR)" stroke="rgba(255,255,255,.86)" stroke-width="2.2"/></g><g transform="translate(120 85) scale(.86) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.20)" stroke="rgba(255,255,255,.74)" stroke-width="2"/></g><g transform="translate(120 85) scale(.72) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.20)" stroke="rgba(255,255,255,.64)" stroke-width="1.8"/></g><g transform="translate(120 85) scale(.58) translate(-120 -85)"><path d="M 71.5 122.7 C 49.3 115.9 41.9 88.7 60.8 74.4 C 59.4 57.4 73.5 42.1 91.1 48.3 C 102.5 27.2 122.7 23.8 134.8 38.7 C 152.3 29.2 170.5 45.5 169.1 65.6 C 194.1 69.0 199.4 98.9 179.9 113.9 C 167.1 130.2 146.3 126.1 130.8 130.2 C 110.6 135.6 87.7 130.2 71.5 122.7 Z" fill="rgba(255,255,255,.22)" stroke="rgba(255,255,255,.56)" stroke-width="1.6"/></g><circle cx="112" cy="66" r="30" fill="url(#moodSpec)"/></svg></div>
+  <div class="moodlabel" style="font-size:22px;text-align:center;margin:4px 0 10px">平静</div>
+  <div class="title" style="font-size:20px;margin:6px 0 4px">什么影响了你的感受？</div>
+  <div class="sub">以下内容都可以跳过。</div>
+  <div class="chips" style="margin-top:14px"><div class="chip">工作</div><div class="chip">学习</div><div class="chip">家庭</div><div class="chip">睡眠</div><div class="chip">健康</div><div class="chip">天气</div></div>
+  <div class="note" style="margin-top:12px">想补充的话（可选）</div>
+  <div class="cap" style="margin-top:10px">这只是个人记录，不用于判断心理疾病。</div>
+  <div class="cta mood">保存这次心情</div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>心情 3/3</b> · 保留因素/备注与保存逻辑；导航、按钮统一</div></div>
+<!-- 9 月历 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="navrow"><span class="back">‹</span><span>心情</span></div><h1 class="big" style="font-size:30px;margin-top:0">2026 年 10 月</h1>
+  <div class="week"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+  <div class="days">
+    <div class="day mut">29</div><div class="day mut">30</div><div class="day">1</div><div class="day">2</div><div class="day">3</div><div class="day">4</div><div class="day">5</div>
+    <div class="day">6</div><div class="day">7</div><div class="day">8</div><div class="day">9</div><div class="day">10</div><div class="day">11</div><div class="day">12</div>
+    <div class="day">13</div><div class="day">14</div><div class="day">15</div><div class="day">16</div><div class="day">17</div><div class="day">18</div><div class="day">19</div>
+    <div class="day sel">20<div class="minicloud"><i></i><i></i><i></i></div><span class="badge">2</span></div>
+    <div class="day">21</div><div class="day">22<div class="minicloud"><i></i><i></i><i></i></div></div><div class="day">23</div><div class="day">24</div><div class="day">25</div><div class="day">26</div>
+    <div class="day">27<div class="minicloud"><i></i><i></i><i></i></div></div><div class="day">28</div><div class="day">29</div><div class="day">30</div><div class="day">31</div><div class="day mut">1</div><div class="day mut">2</div>
+  </div>
+  <div class="title" style="font-size:17px">10 月 20 日 · 2 条</div>
+  <div class="group"><div class="row"><div class="ico"><svg><use href="#i-mood"/></svg></div><div class="rt"><div class="t">平静 · 开心</div><div class="s">09:20 · 有能量</div></div><div class="chev">›</div></div><div class="row"><div class="ico"><svg><use href="#i-mood"/></svg></div><div class="rt"><div class="t">平静</div><div class="s">21:10 · 工作</div></div><div class="chev">›</div></div></div>
+  <div class="cap">有记录的日期显示小云缩略图 + 数量；点击进入同日列表。</div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>心情月历</b> · 云缩略图与数量，不只色点</div></div>
+
+<!-- 10 聊天 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="chathead"><div class="avatar"><svg width="24" height="24" style="color:#3A7BFF"><use href="#i-face"/></svg></div><div><div style="font-size:17px;font-weight:700">小云</div><div class="sub" style="font-size:11px">本地演示回复 · 未接入云岸</div></div><div style="margin-left:auto;color:#8E8E93;font-size:20px">⋯</div></div>
+  <div class="bubble them">下午好，我是小云。现在想聊些什么？</div><div class="bubble me">今天有点累</div><div class="bubble them">辛苦啦。要不要先放松一下，喝点水，再慢慢和我说？</div>
+  <div class="bubble me" style="padding:6px"><div style="width:150px;height:96px;border-radius:14px;background:linear-gradient(140deg,#EAF1FF,#C9D9F7)"></div><div style="font-size:10px;margin-top:5px;color:#5B6B85">本地演示 · 未上传云岸</div></div>
+  <div class="composer"><span>＋</span><span style="flex:1">今天想聊点什么？</span><span><svg width="18" height="18"><use href="#i-mic"/></svg></span><div class="send">➤</div></div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>小云对话</b> · 顶栏 + 消息流；输入区不被底栏遮挡</div></div>
+
+<!-- 11 闹钟 -->
+<div class="slot"><div class="phone"><div class="island"></div><div class="status"><span>10:24</span><span class="right">▮▮ <span class="bar"></span></span></div>
+<div class="scroll">
+  <div class="navrow"><span class="back">‹</span><span>闹钟</span><span style="margin-left:auto;color:#1C1C1E;font-weight:600">保存</span></div>
+  <div class="wheels"><div class="band"></div><div class="col"><div class="v">05</div><div class="v">06</div><div class="v on">07</div><div class="v">08</div><div class="v">09</div></div><div class="colon">:</div><div class="col"><div class="v">28</div><div class="v">29</div><div class="v on">30</div><div class="v">31</div><div class="v">32</div></div></div>
+  <div class="group"><div class="row"><div class="rt"><div class="t">重复</div></div><div class="s">仅一次</div><div class="chev">›</div></div><div class="row"><div class="rt"><div class="t">标签</div></div><div class="s">闹钟</div></div></div>
+  <div class="group"><div class="row"><div class="rt"><div class="t">震动</div><div class="s">连接手表后才生效</div></div><div class="chev">开</div></div><div class="row"><div class="rt"><div class="t">小云播报</div><div class="s">语音能力尚未接入</div></div><div class="chev">关</div></div></div>
+  <div class="cap">保存后仍显示“尚未同步至手表”；第 16 条被拦截并说明原因。</div>
+  <div class="danger">删除闹钟</div>
+</div><div class="homebar"></div></div>
+<div class="caption"><b>闹钟编辑</b> · 分组列表 + 时间滚轮</div></div>
+</div>
+<div class="framenote"><b>展示画框说明：</b>本页的手机外框、灵动岛、状态栏时间（10:24）仅用于同尺寸对照展示，<b>不会进入 Android App</b>；实际实现使用系统状态栏与安全区，不绘制 iPhone 外观。</div>
+</body>
+</html>
