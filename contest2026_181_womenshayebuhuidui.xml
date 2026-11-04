@@ -8,6 +8,33 @@
   -->
   <include name="openvela.xml"/>
 
+  <!--
+    Team fork overrides.
+
+    The modules below carry the work submitted for this contest. Upstream
+    openvela keeps its own copy of them, so a plain `repo sync` would fetch the
+    upstream revision and build WITHOUT our changes. Each override removes the
+    project declared in openvela.xml and re-adds it bound to our fork branch, so
+    that a fresh `repo init` + `repo sync` builds exactly the submitted code.
+  -->
+  <remote fetch="https://github.com/Sen70s/" name="team"/>
+
+  <remove-project name="packages_ai_agent"/>
+  <project path="packages/ai_agent" name="packages_ai_agent" remote="team"
+           revision="bletest"/>
+
+  <remove-project name="vendor_sifli"/>
+  <project path="vendor/sifli" name="vendor_sifli" remote="team"
+           revision="contest/pr-20261103"/>
+
+  <remove-project name="external_zblue"/>
+  <project path="external/zblue/zblue" name="external_zblue" remote="team"
+           revision="contest/pr-20261103"/>
+
+  <remove-project name="frameworks_bluetooth"/>
+  <project path="frameworks/connectivity/bluetooth" name="frameworks_bluetooth" remote="team"
+           revision="contest/pr-20261103"/>
+
   <project path="contest2026_181_womenshayebuhuidui" name="contest2026_181_womenshayebuhuidui">
     <linkfile src="app/hello_app" dest="packages/demos/contest2026_181_hello_app"/>
     <linkfile src="app/ai_agent" dest="packages/demos/contest2026_181_ai_agent"/>
