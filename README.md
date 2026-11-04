@@ -24,15 +24,19 @@ SF32LB52 这块板子只有蓝牙、没有 WiFi。常规做法是让手机 App �
 app/ai_agent/            AI 智能体应用
   ├── ai_lm.cxx          端侧语言模型（TFLite Micro）与端侧工具执行
   ├── pet_care.c/.h      关怀调度器（主动能力核心：空闲关怀 / 闹钟 / 心率告警）
-  ├── health/            心率模拟与阈值判定（hr_monitor / hr_set 命令）
-  ├── skills/            ★ 自定义 Skill：care-reminder.md
-  ├── speech/            命令词识别（TFLite，未并入当前固件）
+  ├── health/            心率采集（MAX30102）、算法与阈值判定
+  ├── skills/            ★ 运行时 Skill：care-reminder.md（烧录后进 /data/agent/skills/）
+  ├── speech/            语音播报入口与语音通道
   ├── model/             模型与 tokenizer 数据
-  └── ui/                LVGL 页面（launcher / 桌宠 / 历史对话 …）
+  └── ui/                LVGL 页面（launcher / 桌宠 / 设置 / 历史对话 …）
+app/lumina_watch/        手机端配套 App（Android/Kotlin，不参与固件构建）
 board/contest_board/     板级 defconfig（正式版 ai_agent / 调试版 ai_agent_pandbg）
-docs/                    交付手册、开发记录（25 篇）
-docs_ble/                蓝牙联网这条线的完整技术记录（21–24 号 + LOG.md）
-logs/Sen70s/             AI Coding 日志
+skills/                  ★ 开发期沉淀的 Skill（nuttx-build-forensics / vela-contest-feature /
+                            storage-write-stability）
+docs/                    交付手册与开发流程文档
+docs_ble/                完整技术记录（21–24 号、25–32 号、104–115 号、device_tech/、LOG.md）
+logs/Sen70s/             AI Coding 日志（16 个会话，2026-08-08 ~ 09-19）
+tools/lumina_preview/    UI 页面/状态预览与自动校验工具
 ```
 
 `docs_ble/` 是技术含量最集中的部分，建议评委从这里看：
@@ -139,6 +143,10 @@ nsh> ask 10分钟后提醒我喝水          # 自定义 Skill 驱动：云端�
 
 本项目使用 Claude Code 等 AI 工具完成全流程开发：需求拆解、方案设计、编码、真机排障、文档。完整对话日志见 `logs/Sen70s/`。
 
+> **日志覆盖范围（如实说明）**：`logs/` 内为 2026-08-08 ~ 09-19 的 16 个会话，由大赛官方采集器导出。
+> 9 月下旬之后开发改用不在官方采集器支持列表内的 AI 工具，无法导出同格式日志；
+> 该阶段的开发过程记录在 `docs_ble/31_development_record_2026-10.md`（逐条对应提交与文档）。
+
 这条线上 AI 协作最有价值的不是写代码，而是**在一个没有调试器、只有串口日志的双核闭源平台上做根因定位**：
 
 - **从症状反推机制**：`tailroom=249` 与任何配置都不匹配，靠读 zblue NuttX port 的 `pool_id()` 实现，发现 `__ASSERT` 在 release 下被编掉、静默返回 0，才定位到「net_buf 池没注册」这个根因——而不是继续调 MTU 配置。
@@ -146,9 +154,16 @@ nsh> ask 10分钟后提醒我喝水          # 自定义 Skill 驱动：云端�
 - **把一次性调试沉淀成规则**：`docs_ble/22` 那四条硬规则与「症状→先查什么」对照表，从 14 轮调试里提炼，下一个人不用重走。
 - **AI 也会误判，证据链比结论重要**：Round 27 我们把「闹钟不响」当成缺陷，实际是触发路径没打日志、串口里看不见；补日志后一次看清（顺带修掉两个真 bug：LVGL 跨线程竞态、1Hz 调度慢 5 倍）。返工过程同样记录在 `LOG.md`。
 
-**沉淀的可复用开发 Skill**：`docs/dev_skill_bt_pan.md`（SF32LB52 蓝牙 PAN 调试技能：四条平台硬规则 + 症状排查表 + 工具入口）。
+**沉淀的可复用开发 Skill（4 个）**：
 
-**作品内的 Agent Skill**：`app/ai_agent/skills/care-reminder.md`——告诉云端 LLM 何时调用设备端 `set_alarm`/`cancel_alarm`，把手表的主动叫醒序列用起来；内置进固件，烧录后即存在于 `/data/ai_agent/skills/`。
+| Skill | 位置 | 作用 |
+|---|---|---|
+| SF32LB52 蓝牙 PAN 调试 | `docs/dev_skill_bt_pan.md` | 四条平台硬规则 + 症状排查表 + 链路吞吐预算 |
+| NuttX 构建/链接产物取证 | `skills/nuttx-build-forensics/` | 符号强弱 / 实际编译选项 / 崩溃符号化（三个脚本） |
+| 小云手表功能开发纪律 | `skills/vela-contest-feature/` | 五条硬规则 + 19 类踩坑清单 + 本板硬件坑 |
+| 存储写路径稳定性 | `skills/storage-write-stability/` | 周期性复位时用只读隔离法先证伪 |
+
+**作品内的运行时 Skill（11 个内置）**：`app/ai_agent/skills/care-reminder.md` 等——烧录后即存在于 `/data/agent/skills/`，并支持文件式加载、`/api/skills` 热更新与 Agent 自创建。完整说明见 `docs_ble/32_skills.md`。
 
 ## 六、主动能力与自定义 Skill（赛题核心）
 
@@ -163,13 +178,14 @@ nsh> ask 10分钟后提醒我喝水          # 自定义 Skill 驱动：云端�
 
 ## 七、公共仓改动（按大赛规则走 fork + PR）
 
-三项平台底层修复不在本仓，而是 PR 到 `dev-ai-contest-2026`：
+以下修复不在本仓，而是以 PR 形式提交到各公共仓的 `dev-ai-contest-2026` 分支：
 
-| PR | 修的是什么 |
-|----|-----------|
-| [external_zblue#231](https://github.com/open-vela/external_zblue/pull/231) | 自定义 net_buf 池没注册进 `_net_buf_pool_list[]`，`pool_id()` 静默返回 0，buffer 拿到别的池的尺寸和存储区 |
-| [vendor_sifli#29](https://github.com/open-vela/vendor_sifli/pull/29) | HCPU→LCPU 邮箱 ring 分块写入回退 LCPU 读指针导致 Hardware_Error；堆上界盖住邮箱 buffer |
-| [frameworks_bluetooth#591](https://github.com/open-vela/frameworks_bluetooth/pull/591) | PAN/BNEP over BR/EDR 实现、TX 池尺寸、开机自动连接 |
+| 仓 | PR | 修的是什么 |
+|----|----|-----------|
+| `external_zblue` | [#231](https://github.com/open-vela/external_zblue/pull/231) / [#234](https://github.com/open-vela/external_zblue/pull/234) / [#236](https://github.com/open-vela/external_zblue/pull/236) | net_buf 池未注册导致 `pool_id()` 静默返回 0；BR/EDR link key 原子写与 CRC；HCI 超时不再断言 |
+| `vendor_sifli` | [#29](https://github.com/open-vela/vendor_sifli/pull/29) / [#40](https://github.com/open-vela/vendor_sifli/pull/40) | 邮箱 ring 分块写入、堆上界盖住邮箱；H4 加密事件归一化、MPI/flash 修复 |
+| `frameworks_bluetooth` | [#591](https://github.com/open-vela/frameworks_bluetooth/pull/591) / [#594](https://github.com/open-vela/frameworks_bluetooth/pull/594) / [#596](https://github.com/open-vela/frameworks_bluetooth/pull/596) | PAN/BNEP over BR/EDR 实现、TX 池尺寸；连接生命周期与竞态修复 |
+| `packages_ai_agent` | [#47](https://github.com/open-vela/packages_ai_agent/pull/47) | 语音链路（VAD/Opus/TTS 回退）、桌宠 UI、健康模块、主动陪伴路由与 TTS 模板缓存 |
 
 细节见 `docs_ble/23_upstream_contributions.md`，根因证据链见 `docs_ble/21`。
 
@@ -191,12 +207,18 @@ nsh> ask 10分钟后提醒我喝水          # 自定义 Skill 驱动：云端�
 | 主动能力 ×3 | ✅ | 三个场景均真机验证（闹钟三段、心率 121/143/138 bpm 告警、静置 5 分钟主动开口 + 模型追问） |
 | 自定义 Skill `care-reminder` | ✅ | 设备上 `/data/ai_agent/skills/care-reminder.md`，配套 `set_alarm`/`cancel_alarm` 工具 |
 | 网络对时（自实现 SNTP） | ✅ | 联网后自动对时，`timesync` 可手动重试 |
+| 心率采集（MAX30102） | ✅ | 独立 I2C2 总线 + FIFO 门控；静息 30 s 内出稳定 BPM |
+| 语音链路（VAD → ASR → LLM → TTS） | ✅ | 流式 VAD + PTT 按键 + 自动断句；Opus 上行把端到端从 57 s 降到 8 s |
+| TTS 模板缓存 | ✅ | 4 条固定台词以 ADPCM 存入 flash，命中时本地播放，不占 TTS session、不写 `/data` |
+| 主动陪伴决策 | ✅ | `care_router` 规则+评分输出 ACTION / SILENT / DEFER，决策日志可回溯 |
+| 手机端配套 App | ✅ | `app/lumina_watch/`（Android/Kotlin，源码随仓提交） |
 
 固件规模：flash 约 7.52 MB（74.95%），SRAM 427 KB（81.48%）。
 
 ### 未完成 / 已知限制（如实列出）
 
-- **语音命令识别**（mic + VAD + 命令词）代码在仓内但未并入当前全局固件
+- **离线命令词识别**（本地 TFLite 关键词）未并入当前固件；语音交互走「按键说话 → 云端 ASR」
+- **演示期 `/data` 只读**：为避开 NOR 写窗口导致的 IWDT 复位，演示版本关闭持久化（见 `docs_ble/104`）；读取正常，重启后心跳/步数/闹钟不保留
 - **端云推送闭环**（HTTP 推送服务器 + 设备端 log_pusher）本轮未做，属赛后演进
 - 端侧模型推理 17–47 s（瓶颈在每 token 从 XIP flash 读权重），仅作兜底
 - 本机蓝牙地址是硬编码假值（多台设备相同），影响同场多机与 Device-Id，见 `docs_ble/24` P1
