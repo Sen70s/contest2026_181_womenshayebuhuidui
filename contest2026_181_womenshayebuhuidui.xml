@@ -9,19 +9,20 @@
   <include name="openvela.xml"/>
 
   <!--
-    Team fork overrides.
+    Team overrides.
 
-    The modules below carry the work submitted for this contest. Upstream
-    openvela keeps its own copy of them, so a plain `repo sync` would fetch the
-    upstream revision and build WITHOUT our changes. Each override removes the
-    project declared in openvela.xml and re-adds it bound to our fork branch, so
-    that a fresh `repo init` + `repo sync` builds exactly the submitted code.
+    The driver-level modules below carry upstream-bound fixes, so they keep
+    pointing at our fork branches.
+
+    The agent application (packages_ai_agent) is deliberately NOT taken from a
+    fork: its full source is vendored in this repository under
+    app/ai_agent_pkg/ and linked into packages/ai_agent, so a fresh
+    `repo init` + `repo sync` builds the submitted application directly from the
+    team repository, without depending on any public-repo PR being merged.
   -->
   <remote fetch="https://github.com/Sen70s/" name="team"/>
 
   <remove-project name="packages_ai_agent"/>
-  <project path="packages/ai_agent" name="packages_ai_agent" remote="team"
-           revision="bletest"/>
 
   <remove-project name="vendor_sifli"/>
   <project path="vendor/sifli" name="vendor_sifli" remote="team"
@@ -38,6 +39,7 @@
   <project path="contest2026_181_womenshayebuhuidui" name="contest2026_181_womenshayebuhuidui">
     <linkfile src="app/hello_app" dest="packages/demos/contest2026_181_hello_app"/>
     <linkfile src="app/ai_agent" dest="packages/demos/contest2026_181_ai_agent"/>
+    <linkfile src="app/ai_agent_pkg" dest="packages/ai_agent"/>
     <linkfile src="quickapp/hello_quickapp" dest="packages/apps/contest2026_181_hello_quickapp"/>
     <linkfile src="board/contest_board" dest="vendor/openvela/boards/contest2026_181_board"/>
   </project>
