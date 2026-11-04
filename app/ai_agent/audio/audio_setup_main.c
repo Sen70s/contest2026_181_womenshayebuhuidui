@@ -39,10 +39,11 @@ int main(int argc, FAR char *argv[])
     }
 
   /* 验证设备可打开 */
-  fd = open("/dev/audio/audio0", O_RDONLY);
+  fd = open("/dev/audio/" CONFIG_EXAMPLES_AUDIO_SETUP_DEVNAME, O_RDONLY);
   if (fd < 0)
     {
-      printf("audio_setup: open /dev/audio/audio0 failed: %d\n", errno);
+      printf("audio_setup: open /dev/audio/%s failed: %d\n",
+             CONFIG_EXAMPLES_AUDIO_SETUP_DEVNAME, errno);
       return -errno;
     }
 
@@ -60,6 +61,38 @@ int main(int argc, FAR char *argv[])
     }
 
   close(fd);
-  printf("audio_setup: /dev/audio/audio0 ready (mic capture 16kHz/16bit/mono)\n");
+  printf("audio_setup: /dev/audio/%s ready (mic capture 16kHz/16bit/mono)\n",
+         CONFIG_EXAMPLES_AUDIO_SETUP_DEVNAME);
+
+#ifdef CONFIG_EXAMPLES_AUDIO_SETUP_TX
+  /* 播放设备: AUDPRC -> AUDCODEC DAC -> 板载 PA (见 docs_ble/30 §10/§11) */
+  ret = sf32lb52_audio_tx_register();
+  if (ret < 0)
+    {
+      printf("audio_setup: playback register failed: %d\n", ret);
+      return ret;
+    }
+
+  fd = open("/dev/audio/" CONFIG_EXAMPLES_AUDIO_SETUP_TX_DEVNAME, O_WRONLY);
+  if (fd < 0)
+    {
+      printf("audio_setup: open /dev/audio/%s failed: %d\n",
+             CONFIG_EXAMPLES_AUDIO_SETUP_TX_DEVNAME, errno);
+      return -errno;
+    }
+
+  memset(&caps, 0, sizeof(caps));
+  caps.ac_type = AUDIO_TYPE_QUERY;
+  ret = ioctl(fd, AUDIOIOC_GETCAPS, &caps);
+  if (ret >= 0)
+    {
+      printf("audio_setup: playback caps OK (output=%d)\n",
+             caps.ac_controls.b[1]);
+    }
+  close(fd);
+  printf("audio_setup: /dev/audio/%s ready (speaker 16kHz/16bit/mono)\n",
+         CONFIG_EXAMPLES_AUDIO_SETUP_TX_DEVNAME);
+#endif
+
   return 0;
 }

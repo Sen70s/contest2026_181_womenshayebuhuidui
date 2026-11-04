@@ -77,3 +77,135 @@ config EXAMPLES_AUDIO_SETUP
 
 		The driver uses the SiFli HAL (bf0_hal_audcodec_m) with DMA
 		capture (DMAC1_CH4, 16kHz/16bit/mono).
+
+config EXAMPLES_AUDIO_SETUP_DEVNAME
+	string "Capture device name"
+	default "audio0"
+	depends on EXAMPLES_AUDIO_SETUP
+	---help---
+		NuttX audio device name for capture, registered as
+		/dev/audio/<name>.  The ai_agent voice path expects pcm0c
+		(AGENT_AUDIO_CAPTURE_DEV), while our own mic tools use audio0.
+
+config EXAMPLES_AUDIO_SETUP_TX
+	bool "Audio playback via AUDPRC -> AUDCODEC DAC -> onboard PA"
+	default n
+	depends on AUDIO
+	---help---
+		Register a second audio device for PLAYBACK, using the only
+		architecture the vendor supports on SF32LB52x:
+
+		  PCM -> DMA (DMA1_Channel1 / REQ 51) -> AUDPRC TX_CH0
+		      -> AUDPRC DAC_PATH (DST_SEL = CODEC) -> AUDCODEC DAC CH0
+		      -> analog DAC1 -> onboard Class-D PA (enable = PA10)
+
+		The codec side must run with dac_cfg.opmode = 0 (AUDPRC -> codec);
+		the 52x HAL has no AUDCODEC DAC DMA instance, so the DMA lives on
+		the AUDPRC.  16 kHz playback uses the 48 MHz XTAL (no audio PLL).
+
+config EXAMPLES_AUDIO_SETUP_TX_DEVNAME
+	string "Playback device name"
+	default "pcm0p"
+	depends on EXAMPLES_AUDIO_SETUP_TX
+	---help---
+		NuttX audio device name for playback (registered as
+		/dev/audio/<name>).  The ai_agent voice path expects pcm0p
+		(AGENT_AUDIO_PLAYBACK_DEV).
+
+config EXAMPLES_AUDIO_PLAY_TEST
+	bool "Audio playback test (speaker / AUDPRC path validation)"
+	default n
+	depends on AUDIO && EXAMPLES_AUDIO_SETUP_TX
+	---help---
+		Standalone playback test that drives the playback device
+		(/dev/audio/<EXAMPLES_AUDIO_SETUP_TX_DEVNAME>, default pcm0p)
+		through the NuttX audio framework: CONFIGURE -> REGISTERMQ ->
+		ALLOCBUFFER x8 -> fill 1 kHz sine -> ENQUEUE -> START ->
+		mq_receive(DEQUEUE) -> refill -> re-enqueue.
+
+		Usage: audio_play_test [seconds=3] [freq=1000]
+
+config EXAMPLES_AUDIO_PLAY
+	bool "Audio play command (PCM file -> playback device)"
+	default n
+	depends on AUDIO && EXAMPLES_AUDIO_SETUP_TX
+	---help---
+		Small product-side player: streams a 16-bit mono PCM file (or a
+		built-in 1 kHz tone) to the playback device.  Used instead of the
+		media framework, which needs cutils/properties.h in this workspace.
+
+		Usage: audio_play <file.pcm> [rate] | audio_play tone [seconds]
+
+config EXAMPLES_SENSOR_MAX30102
+	bool "MAX30102 heart-rate sensor (user-space driver + algo)"
+	default n
+	depends on SENSORS
+	---help---
+		User-space MAX30102 driver on /dev/i2c1 = I2C2 (addr 0x57,
+		PA41=SCL / PA42=SDA, an independent bus so the touch driver on
+		I2C1 cannot contend) plus a 0.5-3.5 Hz band-pass / peak-detect
+		heart-rate algorithm.  Publishes ORB_ID(algo_heartrate) so that
+		ai_agent tool_health / pet_care pick up real measurements.
+
+		Usage: hr_sensor start|stop|status|info
+
+config FITNESS_ALGO
+	bool "Fitness algorithm topics available (algo_heartrate)"
+	default n
+	---help---
+		Gate symbol used by packages/ai_agent/src/tools/tool_health.c
+		(#if defined(CONFIG_UORB) && defined(CONFIG_FITNESS_ALGO)).
+		No other Kconfig in this workspace defines it; enable it
+		together with CONFIG_UORB + CONFIG_USENSOR to make the
+		get_heartrate tool actually read ORB_ID(algo_heartrate).
+
+config EXAMPLES_PCM_MEDIA_TEST
+	bool "PCM media-player test (voice 'mouth' path via /dev/audio/pcm0p)"
+	default n
+	depends on AUDIO && EXAMPLES_AUDIO_SETUP_TX
+	---help---
+		Exercises the media_player_* API implementation that lives in
+		packages/ai_agent/src/stubs.c (CONFIG_MEDIA off) and drives the
+		verified playback device: streams 24 kHz mono s16le chunks, which
+		the implementation resamples to the device's 16 kHz.
+
+		Usage: pcm_media_test [seconds=3] [freq=1000]
+
+config EXAMPLES_VOICE_SPEAK
+	bool "voice_speak: trigger one TTS utterance from NSH"
+	default n
+	---help---
+		ai_agent only speaks on replies that arrive over the voice channel or
+		the pet UI page, so this command exists to exercise the TTS -> playback
+		chain on its own:  voice_speak 你好，我是小云
+
+config EXAMPLES_AUDIO_REC_TEST
+	bool "Audio record test (mic capture validation)"
+	default n
+	depends on AUDIO
+	---help---
+		Standalone mic capture test that drives /dev/audio/audio0 directly,
+		mirroring the proven sequence in speech/mic_capture.c (RESERVE ->
+		CONFIGURE -> REGISTERMQ -> ALLOCBUFFER -> ENQUEUEBUFFER -> START ->
+		mq_receive -> copy -> re-enqueue).
+
+		Records N seconds of 16kHz/16bit/mono PCM to /data/mic_test.pcm and
+		prints a per-second peak amplitude.  Used to verify that the D-cache
+		invalidate fix makes the idle noise floor non-constant-zero
+		(see docs_ble/25_flash_reliability_and_audio_defects.md 25.4).
+
+		Test-only helper; drop it once the capture path is verified.
+
+config EXAMPLES_AUDIO_BEEP
+	bool "Audio beep test (speaker / DAC path validation)"
+	default n
+	---help---
+		Minimal speaker test: drives the SoC audcodec DAC and the onboard
+		Class-D PA (enable pin PA10) straight through the SiFli HAL and
+		plays a 1 kHz tone three times, so "is there any sound at all" can
+		be answered without the NuttX audio framework (our driver only
+		implements the capture/RX half today).
+
+		DAC clock table is taken from the official SDK
+		(codec_dac_clk_config_pll).  Usage:
+		  audio_beep [seconds=3] [freq=1000] [volume-dB=-10]
