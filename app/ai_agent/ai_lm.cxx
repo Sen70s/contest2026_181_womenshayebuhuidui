@@ -1491,6 +1491,35 @@ static int ag_direct_consistent(const char *user, const char *reply)
   return 1;
 }
 
+/* 这句话是否声称"已经执行了某个设备操作"。
+ *
+ * 真机 2026-10-16 抓到: 输入 "这是第 1 条测试消息，用来把对话记录列表填满"
+ * (完全没有设备意图) -> 模型生成 "好的，书房的灯和空调已全部关闭"。
+ * ag_direct_consistent() 只检查开关矛盾和房间槽位, 对"输入里根本没有设备
+ * 意图"这种情形它返回 1(认为一致), 于是这句编造被**当场采信**。
+ *
+ * 所以这里补一道独立的判据: AG_INT_NONE 意味着用户没要求任何设备动作,
+ * 此时回复里只要出现"已执行"类的措辞, 就一定是编的。
+ * 真正的设备指令 (intent != AG_INT_NONE) 不会走到这个检查。 */
+static int ag_reply_claims_device_action(const char *reply)
+{
+  static const char *claim[] = {
+    "已为您", "已设置", "已打开", "已关闭", "已全部", "已启动",
+    "已停止", "已调", "已经为您", "已经打开", "已经关闭", "已经设置",
+    NULL
+  };
+
+  for (int i = 0; claim[i] != NULL; i++)
+    {
+      if (strstr(reply, claim[i]) != NULL)
+        {
+          return 1;
+        }
+    }
+
+  return 0;
+}
+
 /* 直接指令模板兜底 (与训练数据话术一致) */
 static int ag_direct_template(const char *user, char *reply, int size)
 {
@@ -1807,7 +1836,11 @@ direct_path:
 
       if (strchr(p, '<') == NULL && *p != '\0')
         {
-          if (ag_direct_consistent(user_text, p))
+          /* intent == AG_INT_NONE 时, 用户没要求任何设备动作 ——
+           * 回复里若声称"已打开/已关闭/已为您设置", 必然是编的, 不能采信。
+           * (只靠 ag_direct_consistent 拦不住, 见该函数下方注释。) */
+          if (ag_direct_consistent(user_text, p) &&
+              !ag_reply_claims_device_action(p))
             {
               strncpy(reply, p, reply_size - 1);
               reply[reply_size - 1] = '\0';
@@ -1824,6 +1857,35 @@ direct_path:
       return 0;
     }
 
-  /* 最后退回简单模式 (关键词由调用方兜底) */
+  /* ── 域外输入 (AG_INT_NONE) 到此为止: 宁可说"不会", 也不要编 ──
+   *
+   * 真机 2026-10-16 复现: 输入 "好的就这样" (完全没有任何设备意图的闲聊),
+   * 走到下面那句 ai_lm_reply() 的简单模式后, 模型自由生成了
+   *   "已设置母婴室空调温度26度"
+   * —— **凭空编造, 而且声称已经执行了设备操作**。用户会以为空调真被改了。
+   *
+   * 这不是"答得不好", 是幻觉, 而且在这个产品里是**危险**的:
+   * 设备操作类回答必须与真实动作一致, 否则用户会基于假信息行事。
+   *
+   * AG_INT_NONE 的含义就是"输入里没有任何已知设备/工具意图"。
+   * 走到这里说明: 模板也匹配不上(没有灯/空调/窗帘/音乐等关键词)。
+   * 此时**不该再让一个 2.3M 参数的智能家居小模型自由发挥** ——
+   * 它没有通用知识, 只会把训练语料里的设备操作语句硬套过来。
+   *
+   * **返回一句诚实的兜底话, 而不是 -1**: 真机验证过, 上层
+   * (agent_loop.c 的 local_lm_reply 调用点)在**非超时**情况下不会给任何
+   * 兜底文案 —— 返回 -1 会让用户**什么都收不到**(静默)。
+   * 宁可明确说"不会", 也不要静默, 更不要编造。
+   *
+   * 注意: 真闲聊(如"你好")会在上面的 <bot> 分支被 ag_direct_consistent()
+   * 接受并 return 0, 到不了这里 —— 所以本改动不影响正常的闲聊与设备指令。 */
+  if (intent == AG_INT_NONE)
+    {
+      snprintf(reply, reply_size,
+               "这个我还不太会，需要联网才能回答。");
+      return 0;
+    }
+
+  /* 意图明确但模板没兜住: 退回简单模式 (关键词由调用方兜底) */
   return ai_lm_reply(user_text, reply, reply_size);
 }

@@ -22,7 +22,11 @@
 
 #include "mic_capture.h"
 
-#define MIC_DEV_PATH       "/dev/audio/audio0"
+#ifndef CONFIG_EXAMPLES_AUDIO_SETUP_DEVNAME
+#  define MIC_DEV_PATH      "/dev/audio/audio0"
+#else
+#  define MIC_DEV_PATH      "/dev/audio/" CONFIG_EXAMPLES_AUDIO_SETUP_DEVNAME
+#endif
 #define MIC_NUM_BUFFERS    8
 #define MIC_BUFFER_BYTES   4096
 #define MIC_MQ_NAME        "/mic_capture_q"
