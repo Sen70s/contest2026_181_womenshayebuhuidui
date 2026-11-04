@@ -88,3 +88,25 @@ HCPU→LCPU 邮箱 ring 要求整帧写入。**分块写入会让 LCPU 读指针
 - `docs_ble/22_pan_engineering_guide.md` — 本 Skill 的详细版（含代码位置与寄存器细节）
 - `docs_ble/24_open_issues.md` — 已知遗留缺陷与动手入口
 - `docs_ble/LOG.md` — 逐轮调试日志（Round 1–28）
+
+## 七、链路吞吐预算（2026-11-04 实测，别跳过这一步）
+
+**BT PAN 不是"手机热点"。** 实测有效吞吐 **6–9 KB/s**，任何上传/下载方案都要先过这一关，
+否则代码写得再漂亮也跑不动。
+
+| 方案 | 需要的码率 | 在这条链路上 |
+|---|---|---|
+| PCM16 24 kHz 流式 TTS | ≈48 KB/s（base64 后 ~64 KB/s） | ❌ 不可行 |
+| Opus 16–24 kbps | ≈2–3 KB/s | ✅ 可行 |
+| WAV + base64 上传 32–43 KB | — | 卡链路，是"首声慢"的主因之一 |
+
+**规矩**：
+
+1. **先测吞吐，再算预算**。先写方案后算账，必然返工。
+2. 语音首声 12–30 s 的瓶颈是 **ASR 上传 + LLM 首 token + TTS 生成**三段**串行**，
+   不是"文本流式"没做好。按段拆开测，别盯着一个指标调。
+3. **动手前先核对云端 API 的硬限制**：本项目的 MiMo ASR **只接受 mp3 / wav**，
+   不支持 Opus/OGG/WebM（详见 `docs_ble/106_voice_p0_api_findings.md`）。
+   方案设计得再优，API 不收就是零。
+4. SPP 与这类问题无关：手表联网走 **PAN/BNEP**，`CONFIG_BLUETOOTH_SPP_MAX_CONNECTIONS`
+   不是瓶颈；真正的瓶颈在 ACL/L2CAP/IOB 缓冲与链路吞吐。
