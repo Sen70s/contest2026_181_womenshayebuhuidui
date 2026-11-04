@@ -178,3 +178,30 @@ feedback (接受/忽略/拒绝/关闭类别) → RAM 日志 → App/云端
 - 真机：30s demo alarm 到点 `[voice_cache] hit ALARM`，本地播放 2.97s，无网络 TTS。
 - 待验：真实 idle/sedentary/hr_alert 的 `[pet_care] local voice: queued` 与 DND/音乐 skip。
 - 18:06 实测 demo alarm 到点本地 ALARM 缓存播放 2.97s，无网络 TTS（cron→voice 通道）；18:12 idle 因 IMU 噪声未触发，P2A helper 的真机 idle 语音待重测。
+
+## 16. P2A 真机首次验证（v142u，2026-11-04 19:29）
+- 走路阈值 20→60 步/60s：IMU 噪声 d60=39–47 之前被误判 walking，idle 一直 SILENT；调整后 d60=1 正常触发。
+- `req type=idle decision=ACTION` → `care_ticket id=1 FIRED` → `local voice: queued type=idle pcm=98292 cache_only=1` → `voice_cache hit GREET` 本地播放 2.3s，无网络 TTS。
+- 说明 P2A 代码/缓存/门禁链路已真机跑通；之前“看不到”是触发门禁问题，不是功能不存在。
+
+## 17. P2A 感知增强（v142v，2026-11-04 20:06）
+- 固件 v142v md5 142d22e3，已烧录。
+- care 播放前 250ms 两音提示音 + 音量 100%=0dB（同一次 audio_playback 会话，无二次 open）。
+- 跨页 top-layer 角标 5s 自动消失；no-nav care 历史；表盘触发不切页。
+- 真机 20:06:25 idle -> ticket -> `care earcon` -> 本地 GREET 2.5s；`care history (no-nav)`、`care badge`、auto-hide；无网络 TTS、无 ui_nav。
+- 已知：auto-hide 日志每 5s 重复（timer 未一次性删除），不影响视觉，待清理。
+
+## 18. P2B-1 主动关怀语音开关（v142y + App 222cb911，2026-11-04 20:54）
+- 固件 v142y：7,918,852 B md5 bc75d8c2a1db5213958e5ab33fe49b8c。
+- BLE care_settings_get/set 新增 voice（默认1，非法/混合越界原子拒绝）；P2A 门禁 voice_off：只角标/历史，不出声。
+- App：「主动关怀语音」开关，持久化、重连 set→get→list 自动下发。
+- 实测：get voice=1；set voice=0 回读0；voice=2 -> ok=0。
+- 待验：voice=0 时真机触发应出现 local voice: skip (voice_off)，角标/历史正常。
+- 真机 20:58:09 voice=0 触发：`local voice: skip type=idle (voice_off)`，badge 出现、无 earcon/语音；恢复 voice=1 成功。
+
+## 19. P2B-2 场景（v143a + App ab630a55，2026-11-04 21:43）
+- 固件 v143a：7,920,852 B md5 1c7434bc595591f91d457b5846730583（已烧录）。
+- BLE care_event 白名单 eye_rest/water/sleep/weather；Router 门禁；ACTION 建 ticket；eye_rest 只角标/历史无音频；water/sleep/weather 本地缓存+earcon（voice=1）。
+- App：Android 前台服务检测连续亮屏（40/60min）→ care_event eye_rest；喝水/睡觉简化调度；天气仅真实数据占位；场景设置本地持久化。
+- 实测：water ticket id=1 + earcon + WATER 播放；eye_rest ticket id=2 + badge，无声音；DND/cooldown 支持 suppressed。
+- 限制：eye_rest 无音频；iOS 不支持；Android 需通知权限/无开机自启；watch 设置 RAM。

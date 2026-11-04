@@ -1,0 +1,24 @@
+# page	state	label（用于 contact sheet / 校验清单）
+# 22 个关键状态，来自 docs_ble/91 §9 P1。空 state 的 14 页默认态不在这里。
+apps	page2	应用列表第 2 页
+expr	page2	表情第 2 页
+heart	history	有历史（柱状图 + 72）
+heart	measuring	测量中
+heart	failed	信号弱
+spo2	result	本次测量有效
+spo2	last	上次测量
+timer	running	计时中
+timer	finished	时间到
+alarm	list	3 条任务
+alarm	editor	新增编辑区
+alarm	editor_error	添加失败
+weather	loading	获取中
+weather	error	获取失败
+weather	stale	离线缓存
+ai	history_empty	空记录浮层
+ai	history_list	有记录浮层
+ai	reply	长回复
+sport	data	有数据
+sleep	data	有记录
+settings	dnd_on	勿扰开
+watch	data	有数据
