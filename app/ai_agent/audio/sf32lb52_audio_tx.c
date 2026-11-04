@@ -95,6 +95,21 @@ struct sf32lb52_tx_s
   volatile uint32_t underruns;
   volatile uint32_t deq_count;
   volatile uint32_t halves;          /* 半/全传输回调总次数 (DMA 速率探针) */
+  /* 2026-11-04 v142k AUDIO-FIX（TTS 欠载/APB 不回收）诊断+安全：
+   *   enq_calls/cancel_calls -> 上层到底投/撤了多少 APB；
+   *   pend_depth/pend_max    -> pendq 当前/历史最大深度（诊断 deq=0）；
+   *   drain                  -> STOP 排空期间禁止 worker 再取 cur（防与
+   *                             tx_stop 的 free 竞态，leaked worker 时关键）。 */
+  volatile uint32_t enq_calls;
+  volatile uint32_t cancel_calls;
+  volatile uint32_t pend_max;
+  uint32_t       pend_depth;         /* 受 lock 保护 */
+  volatile uint32_t drain;
+  /* 2026-11-04 v142k AUDIO-ROOT 对齐（perf-fw）：worker 卡死定位用。 */
+  volatile uint32_t phase;           /* TX_PHASE_*（worker 当前阶段） */
+  volatile uint32_t fill_start;      /* 进入 tx_fill 的 tick（stall 计算） */
+  volatile uint32_t fill_stall_max;  /* 历史最长 tx_fill 持续 tick */
+  volatile uint32_t lock_fail;       /* trylock 失败计数（g_tx.lock 竞争） */
   uint32_t       t_start;
   /* 2026-11-01 v102a 诊断：区分"start 没被调用"与"DMA 已死" */
   uint32_t       start_calls;        /* tx_start 真正进入次数 */
@@ -156,12 +171,32 @@ static void tx_pa(int on)
 
 #define TX_PACK_DUP 0
 
+/* worker 当前阶段（心跳/ps 取证用；0=空闲） */
+#define TX_PHASE_IDLE      0
+#define TX_PHASE_WAIT_SEM  1
+#define TX_PHASE_FILL      2
+#define TX_PHASE_LOCK      3
+#define TX_PHASE_UPPER     4
+#define TX_PHASE_EXIT      5
+
 static size_t tx_fill(uint8_t *dst, size_t bytes, bool *starved)
 {
   size_t done = 0;
 
+  /* AUDIO-FIX：STOP 正在排空 pendq/cur（并 free APB）时，worker 绝不能再
+   * 进 tx_fill 去取同一只 APB —— 否则 stop 的 free 与 worker 的 memcpy
+   * 竞态 = UAF/串音。drain 由 tx_stop 置位、tx_start 清。 */
+  if (g_tx.drain)
+    {
+      memset(dst, 0, bytes);
+      *starved = true;
+      return 0;
+    }
+
   *starved = false;
   g_tx.fills++;
+  g_tx.fill_start = clock_systime_ticks();
+  g_tx.phase = TX_PHASE_FILL;
   g_tx.in_fill = 1;
 
   while (done < bytes)
@@ -173,12 +208,24 @@ static size_t tx_fill(uint8_t *dst, size_t bytes, bool *starved)
         {
           FAR struct ap_buffer_s *apb = NULL;
 
-          nxmutex_lock(&g_tx.lock);
+          /* AUDIO-ROOT 仪器化：先 trylock，失败计入 lock_fail（区分
+           * "等 g_tx.lock" 与 "卡在别处"）；随后阻塞等待。 */
+          g_tx.phase = TX_PHASE_LOCK;
+          if (nxmutex_trylock(&g_tx.lock) != OK)
+            {
+              g_tx.lock_fail++;
+              nxmutex_lock(&g_tx.lock);
+            }
           if (!dq_empty(&g_tx.pendq))
             {
               apb = (FAR struct ap_buffer_s *)dq_remfirst(&g_tx.pendq);
+              if (g_tx.pend_depth > 0)
+                {
+                  g_tx.pend_depth--;
+                }
             }
           nxmutex_unlock(&g_tx.lock);
+          g_tx.phase = TX_PHASE_FILL;
 
           if (apb == NULL)
             {
@@ -199,8 +246,10 @@ static size_t tx_fill(uint8_t *dst, size_t bytes, bool *starved)
           g_tx.cur = NULL;
           g_tx.cur_off = 0;
           g_tx.deq_count++;
+          g_tx.phase = TX_PHASE_UPPER;
           g_tx.dev.upper(g_tx.dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
           apb_free(apb);
+          g_tx.phase = TX_PHASE_FILL;
           continue;
         }
 
@@ -228,6 +277,17 @@ static size_t tx_fill(uint8_t *dst, size_t bytes, bool *starved)
     }
 
   up_clean_dcache((uintptr_t)dst, (uintptr_t)dst + bytes);
+
+  {
+    uint32_t dur = clock_systime_ticks() - g_tx.fill_start;
+
+    if (dur > g_tx.fill_stall_max)
+      {
+        g_tx.fill_stall_max = dur;
+      }
+  }
+
+  g_tx.phase = TX_PHASE_IDLE;
   g_tx.in_fill = 0;
   return done;
 }
@@ -246,7 +306,11 @@ static int tx_worker(int argc, FAR char *argv[])
 
       /* v110 P0-1：1s 超时等待，既能被中断唤醒，也能周期打印心跳 */
       {
-        int wret = nxsem_tickwait_uninterruptible(&g_tx.wake, 100);
+        int wret;
+
+        g_tx.phase = TX_PHASE_WAIT_SEM;
+        wret = nxsem_tickwait_uninterruptible(&g_tx.wake, 100);
+        g_tx.phase = TX_PHASE_IDLE;
 
         if (wret == OK)
           {
@@ -275,6 +339,8 @@ static int tx_worker(int argc, FAR char *argv[])
           {
             uint32_t dh = g_tx.halves - hb_halves;
             uint32_t df = g_tx.fills - hb_fills;
+            uint32_t fstall = g_tx.in_fill
+                              ? (uint32_t)(now - g_tx.fill_start) : 0;
 
             if (g_tx.running && dh > 0 && df == 0)
               {
@@ -284,15 +350,23 @@ static int tx_worker(int argc, FAR char *argv[])
               {
                 syslog(LOG_INFO,
                   "[audio_tx] hb run=%d dhalves=%u dfills=%u halves=%u irq=%u "
-                  "fills=%u deq=%u posts=%u got=%u idle=%u runF=%u inFill=%u "
-                  "pend=%u stall=%u\n",
+                  "fills=%u deq=%u q=%u cur=%u enq=%u canc=%u posts=%u got=%u "
+                  "idle=%u runF=%u inFill=%u drain=%u pend=%u stall=%u "
+                  "phase=%u fstall=%u lockfail=%u fmax=%u\n",
                   (int)g_tx.running, (unsigned)dh, (unsigned)df,
                   (unsigned)g_tx.halves, (unsigned)g_tx.irq_count,
                   (unsigned)g_tx.fills, (unsigned)g_tx.deq_count,
+                  (unsigned)g_tx.pend_depth,
+                  (unsigned)(g_tx.cur != NULL ? g_tx.cur->nbytes : 0),
+                  (unsigned)g_tx.enq_calls, (unsigned)g_tx.cancel_calls,
                   (unsigned)g_tx.wake_posts, (unsigned)g_tx.wake_got,
                   (unsigned)g_tx.loop_idle, (unsigned)g_tx.run_false,
-                  (unsigned)g_tx.in_fill, (unsigned)(g_tx.half_pending & 3),
-                  (unsigned)g_tx.stall_detect);
+                  (unsigned)g_tx.in_fill, (unsigned)g_tx.drain,
+                  (unsigned)(g_tx.half_pending & 3),
+                  (unsigned)g_tx.stall_detect,
+                  (unsigned)g_tx.phase, (unsigned)fstall,
+                  (unsigned)g_tx.lock_fail,
+                  (unsigned)g_tx.fill_stall_max);
               }
             hb_last = now;
             hb_halves = g_tx.halves;
@@ -302,6 +376,7 @@ static int tx_worker(int argc, FAR char *argv[])
 
       if (g_tx.worker_stop)
         {
+          g_tx.phase = TX_PHASE_EXIT;
           break;
         }
 
@@ -586,6 +661,9 @@ static int tx_start(FAR struct audio_lowerhalf_s *dev)
   /* ── worker 运行期状态复位（线程在 register 时已创建一次） ── */
   priv->halves = 0;
   priv->half_pending = 0;
+  priv->drain = 0;              /* AUDIO-FIX：解除 STOP 排空保护 */
+  priv->deq_count = 0;
+  priv->underruns = 0;
 
   /* 预填两个半缓冲 (此时 DMA 还没跑) */
   {
@@ -656,6 +734,15 @@ static int tx_stop(FAR struct audio_lowerhalf_s *dev)
   priv->half_pending = 0;
   nxsem_post(&priv->wake);
 
+  /* AUDIO-FIX（2026-11-04 v142k）：置 drain 并等 worker 退出 tx_fill
+   * （in_fill==0）再排空，避免本函数 DEQUEUE/apb_free 与 worker 的
+   * tx_fill/memcpy 竞态（worker 泄漏仍活着时尤其危险）。上限 100ms，正常 <1ms。 */
+  priv->drain = 1;
+  for (int i = 0; i < 100 && priv->in_fill; i++)
+    {
+      usleep(1000);
+    }
+
   /* 队列里没播完的: 交还上层并释放驱动引用 */
   for (; ; )
     {
@@ -665,6 +752,10 @@ static int tx_stop(FAR struct audio_lowerhalf_s *dev)
       if (!dq_empty(&priv->pendq))
         {
           apb = (FAR struct ap_buffer_s *)dq_remfirst(&priv->pendq);
+          if (priv->pend_depth > 0)
+            {
+              priv->pend_depth--;
+            }
         }
       nxmutex_unlock(&priv->lock);
 
@@ -677,13 +768,22 @@ static int tx_stop(FAR struct audio_lowerhalf_s *dev)
       apb_free(apb);
     }
 
-  if (priv->cur != NULL)
-    {
-      FAR struct ap_buffer_s *apb = priv->cur;
-      priv->cur = NULL;
-      priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
-      apb_free(apb);
-    }
+  /* AUDIO-FIX：cur 也要在锁内摘除再 free（worker 可能刚读到指针） */
+  {
+    FAR struct ap_buffer_s *apb = NULL;
+
+    nxmutex_lock(&priv->lock);
+    apb = priv->cur;
+    priv->cur = NULL;
+    priv->cur_off = 0;
+    nxmutex_unlock(&priv->lock);
+
+    if (apb != NULL)
+      {
+        priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
+        apb_free(apb);
+      }
+  }
 
   {
 
@@ -700,9 +800,13 @@ static int tx_stop(FAR struct audio_lowerhalf_s *dev)
     printf("audio_tx: 平均 %.0f 半缓冲/秒 (16kHz 播放应为 15.6)\n",
            ticks ? (double)priv->halves * (double)CLK_TCK / (double)ticks : 0.0);
 
-    printf("audio_tx: start=%u irq=%u fills=%u dma_err=%u\n",
+    printf("audio_tx: start=%u irq=%u fills=%u dma_err=%u enq=%u canc=%u q=%u qmax=%u "
+           "lockfail=%u fstall_max=%u\n",
            (unsigned)priv->start_calls, (unsigned)priv->irq_count,
-           (unsigned)priv->fills, (unsigned)priv->dma_err);
+           (unsigned)priv->fills, (unsigned)priv->dma_err,
+           (unsigned)priv->enq_calls, (unsigned)priv->cancel_calls,
+           (unsigned)priv->pend_depth, (unsigned)priv->pend_max,
+           (unsigned)priv->lock_fail, (unsigned)priv->fill_stall_max);
   }
 
   /* ★ v102a 根因修复（S1/S2 确定）：stop 成功后必须回调 COMPLETE，
@@ -724,6 +828,14 @@ static int tx_enqueuebuffer(FAR struct audio_lowerhalf_s *dev,
   FAR struct sf32lb52_tx_s *priv = (FAR struct sf32lb52_tx_s *)dev;
   int ret;
 
+  /* AUDIO-FIX：STOP 排空/停止期间拒绝新入队 —— 否则泄漏 worker 在 stop
+   * 之后投进来的 APB 会残留到下一句 TTS 的 pendq 里（串音/旧音频）且
+   * 可能在下一次 START 被误播。返回 -EAGAIN 让上层 worker 自然退出。 */
+  if (priv->drain)
+    {
+      return -EAGAIN;
+    }
+
   apb_reference(apb);                     /* 驱动自持一份引用 */
 
   ret = nxmutex_lock(&priv->lock);
@@ -735,6 +847,12 @@ static int tx_enqueuebuffer(FAR struct audio_lowerhalf_s *dev,
 
   apb->flags |= AUDIO_APB_OUTPUT_ENQUEUED;
   dq_addlast(&apb->dq_entry, &priv->pendq);
+  priv->enq_calls++;
+  priv->pend_depth++;
+  if (priv->pend_depth > priv->pend_max)
+    {
+      priv->pend_max = priv->pend_depth;
+    }
   nxmutex_unlock(&priv->lock);
 
   /* 若 DMA 正在跑且有空半缓冲, 唤醒 worker 立即补数据 */
@@ -764,6 +882,11 @@ static int tx_cancelbuffer(FAR struct audio_lowerhalf_s *dev,
       if (entry == &apb->dq_entry)
         {
           dq_rem(&apb->dq_entry, &priv->pendq);
+          if (priv->pend_depth > 0)
+            {
+              priv->pend_depth--;
+            }
+          priv->cancel_calls++;
           apb_free(apb);                 /* 归还驱动引用 */
           ret = OK;
           break;
