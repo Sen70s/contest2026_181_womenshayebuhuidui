@@ -1,0 +1,27 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:#FFFDFA;font-family:"PingFang SC","Microsoft YaHei",sans-serif}
+.row{display:flex}
+.cell{width:390px;height:300px;display:flex;align-items:center;justify-content:center}
+.cloud{position:relative;width:210px;height:160px;filter:drop-shadow(0 18px 22px rgba(190,120,70,.18))}
+.cloud i{position:absolute;border-radius:50%;border:1.5px solid rgba(255,255,255,.92);
+background:linear-gradient(145deg,rgba(255,255,255,.66),rgba(255,255,255,.10) 38%,rgba(246,205,175,.38) 72%,rgba(224,150,105,.30));
+box-shadow:inset 0 2px 2px rgba(255,255,255,.95),inset 0 -14px 24px rgba(170,95,55,.28),0 8px 18px rgba(190,120,70,.20),0 1px 0 rgba(255,255,255,.9);
+backdrop-filter:blur(7px);opacity:.9}
+.cloud i:nth-child(1){left:6px;top:76px;width:154px;height:66px;opacity:.66}
+.cloud i:nth-child(2){left:18px;top:46px;width:84px;height:84px;opacity:.7}
+.cloud i:nth-child(3){left:62px;top:22px;width:100px;height:100px;opacity:.78}
+.cloud i:nth-child(4){left:124px;top:50px;width:76px;height:76px;opacity:.64}
+.cloud i:nth-child(5){left:96px;top:92px;width:74px;height:48px;opacity:.74}
+.cloud b{position:absolute;left:58px;top:42px;width:60px;height:30px;border-radius:50%;background:radial-gradient(circle at 40% 40%,rgba(255,255,255,.95),rgba(255,255,255,0));transform:rotate(-18deg)}
+.c1{transform:scale(.86) translateY(10px);filter:hue-rotate(-18deg) saturate(.75) drop-shadow(0 14px 18px rgba(150,110,70,.15))}
+.c2{transform:scale(.94) translateY(4px);filter:hue-rotate(-8deg) saturate(.9)}
+.c3{transform:scale(1)}
+.c4{transform:scale(1.06) translateY(-4px);filter:hue-rotate(8deg) saturate(1.05)}
+.c5{transform:scale(1.12) translateY(-8px);filter:hue-rotate(16deg) saturate(1.12)}
+</style></head><body><div class="row">
+<div class="cell"><div class="cloud c1"><i></i><i></i><i></i><i></i><i></i><b></b></div></div>
+<div class="cell"><div class="cloud c2"><i></i><i></i><i></i><i></i><i></i><b></b></div></div>
+<div class="cell"><div class="cloud c3"><i></i><i></i><i></i><i></i><i></i><b></b></div></div>
+<div class="cell"><div class="cloud c4"><i></i><i></i><i></i><i></i><i></i><b></b></div></div>
+<div class="cell"><div class="cloud c5"><i></i><i></i><i></i><i></i><i></i><b></b></div></div>
+</div></body></html>
